@@ -81,6 +81,12 @@ class HelperMacros {
 	static public macro function parseAndPrint(s:String) {
 		var e = parse(s, currentPos());
 		var s2 = new haxe.macro.Printer().printExpr(e);
+		// parse the printed expression to test for validity
+		try {
+			var e2 = parse(s2, currentPos());
+		} catch (e: Dynamic) {
+			error('Printed expression was invalid: "$e"', currentPos());
+		}
 		return macro eq($v{s}, $v{s2});
 	}
 }

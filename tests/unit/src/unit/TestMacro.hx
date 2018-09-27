@@ -57,5 +57,15 @@ class TestMacro extends Test {
 		parseAndPrint("@:meta a");
 		parseAndPrint("@:meta(a) b");
 		parseAndPrint("@:meta(a, b) b");
+		// new function syntax
+		parseAndPrint("var a:(x:X, y:Y) -> Z");
+		parseAndPrint("var a:(X, Y) -> Z");
+		parseAndPrint("var a:() -> A");
+		parseAndPrint("var a:() -> (() -> A)");
+		parseAndPrint("var a:(x:(y:Y) -> Z) -> A");
+
+		// solve these cases!
+		parseAndPrint("var a:X -> Y");
+		parseAndPrint("var a:(X) -> Y");
 	}
 }
