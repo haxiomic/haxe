@@ -1867,8 +1867,7 @@ let rec type_eq param a b =
 			| Statics c -> (match !(a1.a_status) with Statics c2 when c == c2 -> () | _ -> error [])
 			| EnumStatics e -> (match !(a1.a_status) with EnumStatics e2 when e == e2 -> () | _ -> error [])
 			| AbstractStatics a -> (match !(a1.a_status) with AbstractStatics a2 when a == a2 -> () | _ -> error [])
-			| Opened -> a2.a_status := Closed
-			| Const | Extend _ | Closed -> ()
+			| _ -> ()
 			);
 			PMap.iter (fun n f1 ->
 				try
