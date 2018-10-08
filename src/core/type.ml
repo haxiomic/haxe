@@ -1861,6 +1861,8 @@ let rec type_eq param a b =
 		if a1 != a2 && not (param = EqCoreType && a1.a_path = a2.a_path) then error [cannot_unify a b];
 		List.iter2 (type_eq param) tl1 tl2
 	| TAnon a1, TAnon a2 ->
+		if (a1.a_status != a2.a_status && (param != EqCoreType)) then error [cannot_unify a b];
+		
 		(try
 			PMap.iter (fun n f1 ->
 				try
