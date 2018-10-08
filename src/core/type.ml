@@ -1861,9 +1861,15 @@ let rec type_eq param a b =
 		if a1 != a2 && not (param = EqCoreType && a1.a_path = a2.a_path) then error [cannot_unify a b];
 		List.iter2 (type_eq param) tl1 tl2
 	| TAnon a1, TAnon a2 ->
-		if (a1.a_status != a2.a_status && (param != EqCoreType)) then error [cannot_unify a b];
 		
 		(try
+			(match !(a2.a_status) with
+			| Statics c -> (match !(a1.a_status) with Statics c2 when c == c2 -> () | _ -> error [])
+			| EnumStatics e -> (match !(a1.a_status) with EnumStatics e2 when e == e2 -> () | _ -> error [])
+			| AbstractStatics a -> (match !(a1.a_status) with AbstractStatics a2 when a == a2 -> () | _ -> error [])
+			| Opened -> a2.a_status := Closed
+			| Const | Extend _ | Closed -> ()
+			);
 			PMap.iter (fun n f1 ->
 				try
 					let f2 = PMap.find n a2.a_fields in
