@@ -20,33 +20,26 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-// This file is generated from mozilla\Screen.webidl. Do not edit!
+// This file is generated from mozilla\PaymentRequestUpdateEvent.webidl. Do not edit!
 
 package js.html;
 
 /**
-	The `Screen` interface represents a screen, usually the one on which the current window is being rendered, and is obtained using `window.screen`.
+	The `PaymentRequestUpdateEvent` interface of the the Payment Request API enables a web page to update the details of a `PaymentRequest` in response to a user action.
 
-	Documentation [Screen](https://developer.mozilla.org/en-US/docs/Web/API/Screen) by [Mozilla Contributors](https://developer.mozilla.org/en-US/docs/Web/API/Screen$history), licensed under [CC-BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/).
+	Documentation [PaymentRequestUpdateEvent](https://developer.mozilla.org/en-US/docs/Web/API/PaymentRequestUpdateEvent) by [Mozilla Contributors](https://developer.mozilla.org/en-US/docs/Web/API/PaymentRequestUpdateEvent$history), licensed under [CC-BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/).
 
-	@see <https://developer.mozilla.org/en-US/docs/Web/API/Screen>
+	@see <https://developer.mozilla.org/en-US/docs/Web/API/PaymentRequestUpdateEvent>
 **/
-@:native("Screen")
-extern class Screen extends EventTarget
+@:native("PaymentRequestUpdateEvent")
+extern class PaymentRequestUpdateEvent extends Event
 {
-	var availWidth(default,null) : Int;
-	var availHeight(default,null) : Int;
-	var width(default,null) : Int;
-	var height(default,null) : Int;
-	var colorDepth(default,null) : Int;
-	var pixelDepth(default,null) : Int;
-	var top(default,null) : Int;
-	var left(default,null) : Int;
-	var availTop(default,null) : Int;
-	var availLeft(default,null) : Int;
-	var orientation(default,null) : ScreenOrientation;
-	var colorGamut(default,null) : ScreenColorGamut;
-	var luminance(default,null) : ScreenLuminance;
-	var onchange : haxe.Constraints.Function;
+	/** @throws DOMError */
+	function new( type : String, ?eventInitDict : PaymentRequestUpdateEventInit ) : Void;
 	
+	/**
+		Updates the details of an existing `PaymentRequest`.
+		@throws DOMError
+	**/
+	function updateWith( detailsPromise : Promise<PaymentDetailsUpdate> ) : Void;
 }

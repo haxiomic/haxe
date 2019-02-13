@@ -20,33 +20,26 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-// This file is generated from mozilla\Screen.webidl. Do not edit!
+// This file is generated from mozilla\PushEvent.webidl. Do not edit!
 
 package js.html;
 
 /**
-	The `Screen` interface represents a screen, usually the one on which the current window is being rendered, and is obtained using `window.screen`.
+	The `PushEvent` interface of the Push API represents a push message that has been received. This event is sent to the global scope of a `ServiceWorker`. It contains the information sent from an application server to a `PushSubscription`.
 
-	Documentation [Screen](https://developer.mozilla.org/en-US/docs/Web/API/Screen) by [Mozilla Contributors](https://developer.mozilla.org/en-US/docs/Web/API/Screen$history), licensed under [CC-BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/).
+	Documentation [PushEvent](https://developer.mozilla.org/en-US/docs/Web/API/PushEvent) by [Mozilla Contributors](https://developer.mozilla.org/en-US/docs/Web/API/PushEvent$history), licensed under [CC-BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/).
 
-	@see <https://developer.mozilla.org/en-US/docs/Web/API/Screen>
+	@see <https://developer.mozilla.org/en-US/docs/Web/API/PushEvent>
 **/
-@:native("Screen")
-extern class Screen extends EventTarget
+@:native("PushEvent")
+extern class PushEvent extends ExtendableEvent
 {
-	var availWidth(default,null) : Int;
-	var availHeight(default,null) : Int;
-	var width(default,null) : Int;
-	var height(default,null) : Int;
-	var colorDepth(default,null) : Int;
-	var pixelDepth(default,null) : Int;
-	var top(default,null) : Int;
-	var left(default,null) : Int;
-	var availTop(default,null) : Int;
-	var availLeft(default,null) : Int;
-	var orientation(default,null) : ScreenOrientation;
-	var colorGamut(default,null) : ScreenColorGamut;
-	var luminance(default,null) : ScreenLuminance;
-	var onchange : haxe.Constraints.Function;
 	
+	/**
+		Returns a reference to a `PushMessageData` object containing data sent to the `PushSubscription`.
+	**/
+	var data(default,null) : PushMessageData;
+	
+	/** @throws DOMError */
+	function new( type : String, ?eventInitDict : PushEventInit ) : Void;
 }

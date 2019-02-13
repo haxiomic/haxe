@@ -34,6 +34,7 @@ package js.html;
 @:native("WorkerNavigator")
 extern class WorkerNavigator
 {
+	var mediaCapabilities(default,null) : MediaCapabilities;
 	var hardwareConcurrency(default,null) : Int;
 	var appCodeName(default,null) : String;
 	var appName(default,null) : String;
@@ -44,6 +45,7 @@ extern class WorkerNavigator
 	var language(default,null) : String;
 	var languages(default,null) : Array<String>;
 	var onLine(default,null) : Bool;
+	var storage(default,null) : StorageManager;
 	
 	function taintEnabled() : Bool;
 }

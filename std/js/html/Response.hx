@@ -80,6 +80,11 @@ extern class Response
 		Contains the `Headers` object associated with the response.
 	**/
 	var headers(default,null) : Headers;
+	
+	/**
+		A simple getter used to expose a `ReadableStream` of the body contents.
+	**/
+	var body(default,null) : Dynamic/*MISSING ReadableStream*/;
 	var bodyUsed(default,null) : Bool;
 	
 	/** @throws DOMError */

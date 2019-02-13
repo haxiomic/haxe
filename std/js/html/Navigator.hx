@@ -49,6 +49,11 @@ extern class Navigator
 	var maxTouchPoints(default,null) : Int;
 	
 	/**
+		Returns a `MediaCapabilities` object that can expose information about the decoding and encoding capabilities for a given format and output capabilities
+	**/
+	var mediaCapabilities(default,null) : MediaCapabilities;
+	
+	/**
 		Returns a string that represents the current operating system.
 	**/
 	var oscpu(default,null) : String;
@@ -79,6 +84,11 @@ extern class Navigator
 	var buildID(default,null) : String;
 	
 	/**
+		Returns a reference to a `MediaDevices` object which can then be used to get information about available media devices (`MediaDevices.enumerateDevices()`), find out what constrainable properties are supported for media on the user's computer and user agent (`MediaDevices.getSupportedConstraints()`), and to request access to media using `MediaDevices.getUserMedia()`.
+	**/
+	var mediaDevices(default,null) : MediaDevices;
+	
+	/**
 		Returns a `ServiceWorkerContainer` object, which provides access to registration, removal, upgrade, and communication with the `ServiceWorker` objects for the associated document.
 	**/
 	var serviceWorker(default,null) : ServiceWorkerContainer;
@@ -97,12 +107,15 @@ extern class Navigator
 	var language(default,null) : String;
 	var languages(default,null) : Array<String>;
 	var onLine(default,null) : Bool;
+	var storage(default,null) : StorageManager;
 	
 	@:overload( function( duration : Int ) : Bool {} )
 	function vibrate( pattern : Array<Int> ) : Bool;
 	function javaEnabled() : Bool;
 	/** @throws DOMError */
 	function getGamepads() : Array<Gamepad>;
+	/** @throws DOMError */
+	function requestMIDIAccess( ?options : MIDIOptions ) : Promise<MIDIAccess>;
 	/** @throws DOMError */
 	@:overload( function( url : String, ?data : ArrayBufferView) : Bool {} )
 	@:overload( function( url : String, ?data : ArrayBuffer) : Bool {} )

@@ -85,6 +85,10 @@ extern class DataTransfer
 		@throws DOMError
 	**/
 	function clearData( ?format : String ) : Void;
+	/** @throws DOMError */
+	function getFilesAndDirectories() : Promise<Array<haxe.extern.EitherType<File,Directory>>>;
+	/** @throws DOMError */
+	function getFiles( recursiveFlag : Bool = false ) : Promise<Array<File>>;
 	
 	/**
 		Sets the drag source to the given element.

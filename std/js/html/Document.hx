@@ -174,6 +174,11 @@ extern class Document extends Node
 		Represents the event handling code for the `afterscriptexecute` event.
 	**/
 	var onafterscriptexecute : haxe.Constraints.Function;
+	
+	/**
+		Is an `EventHandler` representing the code to be called when the `selectionchange` event is raised.
+	**/
+	var onselectionchange : haxe.Constraints.Function;
 	var currentScript(default,null) : Element;
 	
 	/**
@@ -275,6 +280,11 @@ extern class Document extends Node
 	var activeElement(default,null) : Element;
 	var styleSheets(default,null) : StyleSheetList;
 	var pointerLockElement(default,null) : Element;
+	
+	/**
+		The element that's currently in full screen mode for this document.
+	**/
+	var fullscreenElement(default,null) : Element;
 	var fonts(default,null) : FontFaceSet;
 	var onabort : haxe.Constraints.Function;
 	var onblur : haxe.Constraints.Function;
@@ -338,6 +348,7 @@ extern class Document extends Node
 	var ontimeupdate : haxe.Constraints.Function;
 	var onvolumechange : haxe.Constraints.Function;
 	var onwaiting : haxe.Constraints.Function;
+	var onselectstart : haxe.Constraints.Function;
 	var ontoggle : haxe.Constraints.Function;
 	var onpointercancel : haxe.Constraints.Function;
 	var onpointerdown : haxe.Constraints.Function;

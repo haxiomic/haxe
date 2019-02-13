@@ -88,6 +88,8 @@ extern class InputElement extends Element
 	**/
 	var useMap : String;
 	var textLength(default,null) : Int;
+	var allowdirs : Bool;
+	var isFilesAndDirectoriesSupported(default,null) : Bool;
 	
 	
 	/**
@@ -124,4 +126,10 @@ extern class InputElement extends Element
 	function setRangeText( replacement : String, start : Int, end : Int, selectionMode : SelectionMode = PRESERVE ) : Void;
 	/** @throws DOMError */
 	function setSelectionRange( start : Int, end : Int, ?direction : String ) : Void;
+	/** @throws DOMError */
+	function getFilesAndDirectories() : Promise<Array<haxe.extern.EitherType<File,Directory>>>;
+	/** @throws DOMError */
+	function getFiles( recursiveFlag : Bool = false ) : Promise<Array<File>>;
+	/** @throws DOMError */
+	function chooseDirectory() : Void;
 }

@@ -20,33 +20,21 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-// This file is generated from mozilla\Screen.webidl. Do not edit!
+// This file is generated from mozilla\PerformanceObserverEntryList.webidl. Do not edit!
 
 package js.html;
 
 /**
-	The `Screen` interface represents a screen, usually the one on which the current window is being rendered, and is obtained using `window.screen`.
+	The `PerformanceObserverEntryList` interface is a list of peformance events that were explicitly observed via the `observe()` method.
 
-	Documentation [Screen](https://developer.mozilla.org/en-US/docs/Web/API/Screen) by [Mozilla Contributors](https://developer.mozilla.org/en-US/docs/Web/API/Screen$history), licensed under [CC-BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/).
+	Documentation [PerformanceObserverEntryList](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceObserverEntryList) by [Mozilla Contributors](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceObserverEntryList$history), licensed under [CC-BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/).
 
-	@see <https://developer.mozilla.org/en-US/docs/Web/API/Screen>
+	@see <https://developer.mozilla.org/en-US/docs/Web/API/PerformanceObserverEntryList>
 **/
-@:native("Screen")
-extern class Screen extends EventTarget
+@:native("PerformanceObserverEntryList")
+extern class PerformanceObserverEntryList
 {
-	var availWidth(default,null) : Int;
-	var availHeight(default,null) : Int;
-	var width(default,null) : Int;
-	var height(default,null) : Int;
-	var colorDepth(default,null) : Int;
-	var pixelDepth(default,null) : Int;
-	var top(default,null) : Int;
-	var left(default,null) : Int;
-	var availTop(default,null) : Int;
-	var availLeft(default,null) : Int;
-	var orientation(default,null) : ScreenOrientation;
-	var colorGamut(default,null) : ScreenColorGamut;
-	var luminance(default,null) : ScreenLuminance;
-	var onchange : haxe.Constraints.Function;
-	
+	function getEntries( ?filter : PerformanceEntryFilterOptions ) : Array<PerformanceEntry>;
+	function getEntriesByType( entryType : String ) : Array<PerformanceEntry>;
+	function getEntriesByName( name : String, ?entryType : String ) : Array<PerformanceEntry>;
 }

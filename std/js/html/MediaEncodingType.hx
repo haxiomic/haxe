@@ -20,33 +20,12 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-// This file is generated from mozilla\Screen.webidl. Do not edit!
+// This file is generated from mozilla\MediaCapabilities.webidl. Do not edit!
 
 package js.html;
 
-/**
-	The `Screen` interface represents a screen, usually the one on which the current window is being rendered, and is obtained using `window.screen`.
-
-	Documentation [Screen](https://developer.mozilla.org/en-US/docs/Web/API/Screen) by [Mozilla Contributors](https://developer.mozilla.org/en-US/docs/Web/API/Screen$history), licensed under [CC-BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/).
-
-	@see <https://developer.mozilla.org/en-US/docs/Web/API/Screen>
-**/
-@:native("Screen")
-extern class Screen extends EventTarget
+enum abstract MediaEncodingType(String)
 {
-	var availWidth(default,null) : Int;
-	var availHeight(default,null) : Int;
-	var width(default,null) : Int;
-	var height(default,null) : Int;
-	var colorDepth(default,null) : Int;
-	var pixelDepth(default,null) : Int;
-	var top(default,null) : Int;
-	var left(default,null) : Int;
-	var availTop(default,null) : Int;
-	var availLeft(default,null) : Int;
-	var orientation(default,null) : ScreenOrientation;
-	var colorGamut(default,null) : ScreenColorGamut;
-	var luminance(default,null) : ScreenLuminance;
-	var onchange : haxe.Constraints.Function;
-	
+	var RECORD = "record";
+	var TRANSMISSION = "transmission";
 }
