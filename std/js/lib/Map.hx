@@ -101,6 +101,14 @@ extern class Map<K, V> {
 		for each element in the `js.Map` object in insertion order.
 	**/
 	function entries():Iterator<MapEntry<K, V>>;
+
+	inline function iterator(): js.lib.Iterator.Wrapper<V> {
+		return values().iterator();
+	}
+
+	inline function keyValueIterator(): KVIteratorWrapper<K, V> {
+		return new KVIteratorWrapper(this);
+	}
 }
 
 /**
@@ -115,4 +123,28 @@ abstract MapEntry<K, V>(Array<Any>) {
 
 	inline function get_value():V
 		return this[1];
+}
+
+private class KVIteratorWrapper<K, V> {
+
+	final map: js.lib.Map<K, V>;
+	final entries: js.lib.Iterator.Wrapper<MapEntry<K, V>>;
+
+	public inline function new(map: js.lib.Map<K, V>) {
+		this.map = map;
+		this.entries = map.entries().iterator();
+	}
+
+	public inline function hasNext() : Bool {
+		return entries.hasNext();
+	}
+
+	public inline function next() : {key: K, value: V} {
+		var entry = entries.next();
+		return {
+			key: entry.key,
+			value: entry.value,
+		};
+	}
+
 }

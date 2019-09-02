@@ -22,11 +22,42 @@
 
 package js.lib;
 
-typedef Iterator<T> = {
+extern class Iterator<T> {
+
 	function next():IteratorStep<T>;
+
+	inline function iterator(): Wrapper<T> {
+		return new Wrapper(this);
+	}
+
 }
 
 typedef IteratorStep<T> = {
 	done:Bool,
 	?value:T
+}
+
+/**
+ * Wrap a JS-iterator in a class that haxe can iterate over
+**/
+class Wrapper<T> {
+
+    final iterator: js.lib.Iterator<T>;
+    var lastStep: js.lib.Iterator.IteratorStep<T>;
+
+    public inline function new(iterator: js.lib.Iterator<T>) {
+        this.iterator = iterator;
+        lastStep = iterator.next();
+    }
+
+    public inline function hasNext(): Bool {
+        return !lastStep.done;
+    }
+
+    public inline function next(): T {
+        var v = lastStep.value;
+        lastStep = iterator.next();
+        return v;
+    }
+
 }
