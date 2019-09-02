@@ -292,6 +292,15 @@ typedef Metadata = {
 	var ?links:Array<String>;
 }
 
+typedef Define = {
+	var name:String;
+	var value:Null<String>;
+	var doc:JsonDoc;
+	var parameters:Array<String>;
+	var platforms:Array<Platform>;
+	var links:Array<String>;
+}
+
 typedef Keyword = {
 	var name:KeywordKind;
 }
@@ -368,6 +377,7 @@ enum abstract DisplayItemKind<T>(String) {
 	var AnonymousStructure:DisplayItemKind<JsonAnon>;
 	var Expression:DisplayItemKind<JsonTExpr>;
 	var TypeParameter:DisplayItemKind<DisplayModuleTypeParameter>;
+	var Define:DisplayItemKind<Define>;
 }
 
 typedef DisplayItem<T> = {
@@ -435,6 +445,7 @@ typedef CompletionResponse<T1, T2> = {
 	var mode:CompletionMode<T2>;
 	var ?replaceRange:Range;
 	var ?isIncomplete:Bool;
+	var ?filterString:String;
 }
 
 typedef CompletionResult = Response<Null<CompletionResponse<Dynamic, Dynamic>>>;

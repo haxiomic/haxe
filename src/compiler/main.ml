@@ -81,7 +81,7 @@ let error ctx msg p =
 	ctx.has_error <- true
 
 let reserved_flags = [
-	"cross";"js";"lua";"neko";"flash";"php";"cpp";"cs";"java";"python";
+	"true";"false";"null";"cross";"js";"lua";"neko";"flash";"php";"cpp";"cs";"java";"python";
 	"as3";"swc";"macro";"sys";"static";"utf16";"haxe";"haxe_ver"
 	]
 
@@ -126,10 +126,10 @@ let add_libs com libs =
 				(try
 					(* if we are compiling, really call haxelib since library path might have changed *)
 					if not com.display.dms_display then raise Not_found;
-					CompilationServer.find_haxelib cs libs
+					cs#find_haxelib libs
 				with Not_found ->
 					let lines = call_haxelib() in
-					CompilationServer.cache_haxelib cs libs lines;
+					cs#cache_haxelib libs lines;
 					lines)
 			| _ -> call_haxelib()
 		in
@@ -478,39 +478,41 @@ let run_or_diagnose com f arg =
 	| _ ->
 		f arg
 
-(** Creates the typer context and types [classes] into it. *)
-let do_type ctx native_libs config_macros classes =
+let create_typer_context ctx native_libs =
 	let com = ctx.com in
 	ctx.setup();
 	Common.log com ("Classpath: " ^ (String.concat ";" com.class_path));
 	Common.log com ("Defines: " ^ (String.concat ";" (PMap.foldi (fun k v acc -> (match v with "1" -> k | _ -> k ^ "=" ^ v) :: acc) com.defines.Define.values [])));
-	let t = Timer.timer ["typing"] in
 	Typecore.type_expr_ref := (fun ?(mode=MGet) ctx e with_type -> Typer.type_expr ~mode ctx e with_type);
 	List.iter (fun f -> f ()) (List.rev com.callbacks#get_before_typer_create);
 	(* Native lib pass 1: Register *)
-	let fl = List.map (fun (file,extern) -> NativeLibraryHandler.add_native_lib com file extern) native_libs in
+	let fl = List.map (fun (file,extern) -> NativeLibraryHandler.add_native_lib com file extern) (List.rev native_libs) in
 	(* Native lib pass 2: Initialize *)
 	List.iter (fun f -> f()) fl;
-	let tctx = Typer.create com in
-	let add_signature desc =
-		Option.may (fun cs -> CompilationServer.maybe_add_context_sign cs com desc) (CompilationServer.get ());
-	in
-	add_signature "before_init_macros";
+	Typer.create com
+
+(** Creates the typer context and types [classes] into it. *)
+let do_type tctx config_macros classes =
+	let com = tctx.Typecore.com in
+	let t = Timer.timer ["typing"] in
+	Option.may (fun cs -> CommonCache.maybe_add_context_sign cs com "before_init_macros") (CompilationServer.get ());
+	com.stage <- CInitMacrosStart;
 	List.iter (MacroContext.call_init_macro tctx) (List.rev config_macros);
-	add_signature "after_init_macros";
+	com.stage <- CInitMacrosDone;
+	CommonCache.lock_signature com "after_init_macros";
 	List.iter (fun f -> f ()) (List.rev com.callbacks#get_after_init_macros);
 	run_or_diagnose com (fun () ->
 		List.iter (fun cpath -> ignore(tctx.Typecore.g.Typecore.do_load_module tctx cpath null_pos)) (List.rev classes);
 		Finalization.finalize tctx;
 	) ();
+	com.stage <- CTypingDone;
 	(* If we are trying to find references, let's syntax-explore everything we know to check for the
 		identifier we are interested in. We then type only those modules that contain the identifier. *)
 	begin match !CompilationServer.instance,com.display.dms_kind with
 		| Some cs,DMUsage _ -> FindReferences.find_possible_references tctx cs;
 		| _ -> ()
 	end;
-	t();
-	tctx
+	t()
 
 let load_display_module_in_macro tctx display_file_dot_path clear = match display_file_dot_path with
 	| Some cpath ->
@@ -549,7 +551,7 @@ let handle_display ctx tctx display_file_dot_path =
 	let com = ctx.com in
 	if not ctx.com.display.dms_display && ctx.has_error then raise Abort;
 	begin match ctx.com.display.dms_kind,!Parser.delayed_syntax_completion with
-		| DMDefault,Some(kind,p) -> DisplayOutput.handle_syntax_completion com kind p
+		| DMDefault,Some(kind,subj) -> DisplayOutput.handle_syntax_completion com kind subj
 		| _ -> ()
 	end;
 	if ctx.com.display.dms_exit_during_typing then begin
@@ -570,6 +572,7 @@ let handle_display ctx tctx display_file_dot_path =
 
 let filter ctx tctx display_file_dot_path =
 	let com = ctx.com in
+	com.stage <- CFilteringStart;
 	let t = Timer.timer ["filters"] in
 	let main, types, modules = run_or_diagnose com Finalization.generate tctx in
 	com.main <- main;
@@ -577,7 +580,13 @@ let filter ctx tctx display_file_dot_path =
 	com.modules <- modules;
 	(* Special case for diagnostics: We don't want to load the display file in macro mode because there's a chance it might not be
 		macro-compatible. This means that we might some macro-specific diagnostics, but I don't see what we could do about that. *)
-	if ctx.com.display.dms_force_macro_typing && (match ctx.com.display.dms_kind with DMDiagnostics _ -> false | _ -> true) then begin
+	let should_load_in_macro = match ctx.com.display.dms_kind with
+		(* Special case for the special case: If the display file has a block which becomes active if `macro` is defined, we can safely
+		   type the module in macro context. (#8682). *)
+		| DMDiagnostics _ -> com.display_information.display_module_has_macro_defines
+		| _ -> true
+	in
+	if ctx.com.display.dms_force_macro_typing && should_load_in_macro then begin
 		match load_display_module_in_macro  tctx display_file_dot_path false with
 		| None -> ()
 		| Some mctx ->
@@ -609,6 +618,11 @@ let check_auxiliary_output com xml_out json_out =
 			Path.mkdir_from_path file;
 			Genjson.generate com.types file
 	end
+
+let parse_host_port hp =
+	let host, port = (try ExtString.String.split hp ":" with _ -> "127.0.0.1", hp) in
+	let port = try int_of_string port with _ -> raise (Arg.Bad "Invalid port") in
+	host, port
 
 let rec process_params create pl =
 	let each_params = ref [] in
@@ -653,11 +667,13 @@ let rec process_params create pl =
 				loop acc l
 			| _ -> loop (arg :: acc) l
 	in
-	(* put --display in front if it was last parameter *)
-	let pl = (match List.rev pl with
-		| file :: "--display" :: pl when file <> "memory" -> "--display" :: file :: List.rev pl
+	(* put --display in each_params if it was last parameter *)
+	let pl = match List.rev pl with
+		| file :: "--display" :: pl when file <> "memory" ->
+			each_params := "--display" :: file :: !each_params;
+			List.rev pl
 		| _ -> pl
-	) in
+	in
 	loop [] pl
 
 and init ctx =
@@ -764,12 +780,13 @@ try
 			Common.raw_define com l;
 		),"<name[:ver]>","use a haxelib library");
 		("Compilation",["-D";"--define"],[],Arg.String (fun var ->
+			let flag = try fst (ExtString.String.split var "=") with _ -> var in
 			let raise_reserved description =
 				raise (Arg.Bad (description ^ " and cannot be defined from the command line"))
 			in
-			if List.mem var reserved_flags then raise_reserved (Printf.sprintf "`%s` is a reserved compiler flag" var);
+			if List.mem flag reserved_flags then raise_reserved (Printf.sprintf "`%s` is a reserved compiler flag" flag);
 			List.iter (fun ns ->
-				if ExtString.String.starts_with var (ns ^ ".") then raise_reserved (Printf.sprintf "`%s` uses the reserved compiler flag namespace `%s.*`" var ns)
+				if ExtString.String.starts_with flag (ns ^ ".") then raise_reserved (Printf.sprintf "`%s` uses the reserved compiler flag namespace `%s.*`" flag ns)
 			) reserved_flag_namespaces;
 			Common.raw_define com var;
 		),"<var[=value]>","define a conditional compilation flag");
@@ -903,20 +920,24 @@ try
 			force_typing := true;
 			config_macros := e :: !config_macros
 		),"<macro>","call the given macro before typing anything else");
-		("Compilation Server",["--wait"],[], Arg.String (fun hp ->
+		("Compilation Server",["--server-listen"],["--wait"], Arg.String (fun hp ->
 			let accept = match hp with
 				| "stdio" ->
 					Server.init_wait_stdio()
 				| _ ->
-					let host, port = (try ExtString.String.split hp ":" with _ -> "127.0.0.1", hp) in
-					let port = try int_of_string port with _ -> raise (Arg.Bad "Invalid port") in
+					let host, port = parse_host_port hp in
 					init_wait_socket host port
 			in
 			wait_loop process_params com.verbose accept
-		),"[[host:]port]|stdio]","wait on the given port (or use standard i/o) for commands to run)");
+		),"[[host:]port]|stdio]","wait on the given port (or use standard i/o) for commands to run");
+		("Compilation Server",["--server-connect"],[], Arg.String (fun hp ->
+			let host, port = parse_host_port hp in
+			let accept = Server.init_wait_connect host port in
+			wait_loop process_params com.verbose accept
+		),"[host:]port]","connect to the given port and wait for commands to run");
 		("Compilation Server",["--connect"],[],Arg.String (fun _ ->
 			assert false
-		),"<[host:]port>","connect on the given port and run commands there)");
+		),"<[host:]port>","connect on the given port and run commands there");
 		("Compilation",["-C";"--cwd"],[], Arg.String (fun dir ->
 			assert false
 		),"<dir>","set current working directory");
@@ -924,7 +945,7 @@ try
 	let args_callback cl =
 		begin try
 			let path,name = Path.parse_path cl in
-			if StringHelper.starts_uppercase name then
+			if StringHelper.starts_uppercase_identifier name then
 				classes := (path,name) :: !classes
 			else begin
 				force_typing := true;
@@ -1009,16 +1030,34 @@ try
 	let t = Timer.timer ["init"] in
 	List.iter (fun f -> f()) (List.rev (!pre_compilation));
 	t();
+	com.stage <- CInitialized;
 	if !classes = [([],"Std")] && not !force_typing then begin
 		if !cmds = [] && not !did_something then raise (HelpMessage (usage_string basic_args_spec usage));
 	end else begin
 		(* Actual compilation starts here *)
-		let tctx = do_type ctx !native_libs !config_macros !classes in
+		let tctx = create_typer_context ctx !native_libs in
+		com.stage <- CTyperCreated;
+		let display_file_dot_path = match display_file_dot_path with
+			| DPKMacro path ->
+				ignore(load_display_module_in_macro tctx (Some path) true);
+				Some path
+			| DPKNormal path ->
+				Some path
+			| DPKNone ->
+				None
+		in
+		begin try
+			do_type tctx !config_macros !classes;
+		with TypeloadParse.DisplayInMacroBlock ->
+			ignore(load_display_module_in_macro tctx display_file_dot_path true);
+		end;
 		handle_display ctx tctx display_file_dot_path;
 		filter ctx tctx display_file_dot_path;
 		if ctx.has_error then raise Abort;
 		check_auxiliary_output com !xml_out !json_out;
+		com.stage <- CGenerationStart;
 		if not !no_output then generate tctx ext !interp !swf_header;
+		com.stage <- CGenerationDone;
 	end;
 	Sys.catch_break false;
 	List.iter (fun f -> f()) (List.rev com.callbacks#get_after_generation);
@@ -1053,7 +1092,7 @@ with
 		error ctx m p
 	| Arg.Bad msg ->
 		error ctx ("Error: " ^ msg) null_pos
-	| Failure msg when not (is_debug_run()) ->
+	| Failure msg when not is_debug_run ->
 		error ctx ("Error: " ^ msg) null_pos
 	| HelpMessage msg ->
 		com.info msg null_pos
@@ -1061,9 +1100,9 @@ with
 		begin
 			DisplayPosition.display_position#reset;
 			match ctx.com.json_out with
-			| Some (f,_,jsonrpc) ->
-				let ctx = DisplayJson.create_json_context jsonrpc (match de with DisplayFields _ -> true | _ -> false) in
-				f (DisplayException.to_json ctx de)
+			| Some api ->
+				let ctx = DisplayJson.create_json_context api.jsonrpc (match de with DisplayFields _ -> true | _ -> false) in
+				api.send_result (DisplayException.to_json ctx de)
 			| _ -> assert false
 		end
 	(* | Parser.TypePath (_,_,_,p) when ctx.com.json_out <> None ->
@@ -1125,30 +1164,33 @@ with
 		let fields =
 			try begin match c with
 				| None ->
-					DisplayOutput.TypePathHandler.complete_type_path com p
+					DisplayPath.TypePathHandler.complete_type_path com p
 				| Some (c,cur_package) ->
-					DisplayOutput.TypePathHandler.complete_type_path_inner com p c cur_package is_import
+					let ctx = Typer.create com in
+					DisplayPath.TypePathHandler.complete_type_path_inner ctx p c cur_package is_import
 			end with Common.Abort(msg,p) ->
 				error ctx msg p;
 				None
 		in
-		begin match fields with
-		| None -> ()
-		| Some fields ->
-			begin match ctx.com.json_out with
-			| Some (f,_,jsonrpc) ->
-				let ctx = DisplayJson.create_json_context jsonrpc false in
-				let path = match List.rev p with
-					| name :: pack -> List.rev pack,name
-					| [] -> [],""
-				in
-				let kind = CRField ((CompletionItem.make_ci_module path,pos,None,None)) in
-				f (DisplayException.fields_to_json ctx fields kind None None);
-			| _ -> raise (DisplayOutput.Completion (DisplayOutput.print_fields fields))
-			end
+		begin match ctx.com.json_out,fields with
+		| None,None ->
+			()
+		| None,Some fields ->
+			raise (DisplayOutput.Completion (DisplayOutput.print_fields fields))
+		| Some api,None when is_legacy_completion com ->
+			api.send_result JNull
+		| Some api,fields ->
+			let fields = Option.default [] fields in
+			let ctx = DisplayJson.create_json_context api.jsonrpc false in
+			let path = match List.rev p with
+				| name :: pack -> List.rev pack,name
+				| [] -> [],""
+			in
+			let kind = CRField ((CompletionItem.make_ci_module path,pos,None,None)) in
+			api.send_result (DisplayException.fields_to_json ctx fields kind (DisplayTypes.make_subject None pos));
 		end
-	| Parser.SyntaxCompletion(kind,pos) ->
-		DisplayOutput.handle_syntax_completion com kind pos;
+	| Parser.SyntaxCompletion(kind,subj) ->
+		DisplayOutput.handle_syntax_completion com kind subj;
 		error ctx ("Error: No completion point was found") null_pos
 	| DisplayException(ModuleSymbols s | Diagnostics s | Statistics s | Metadata s) ->
 		DisplayPosition.display_position#reset;
@@ -1161,7 +1203,7 @@ with
 		raise exc
 	| Out_of_memory as exc ->
 		raise exc
-	| e when (try Sys.getenv "OCAMLRUNPARAM" <> "b" || CompilationServer.runs() with _ -> true) && not (is_debug_run()) ->
+	| e when (try Sys.getenv "OCAMLRUNPARAM" <> "b" || CompilationServer.runs() with _ -> true) && not is_debug_run ->
 		error ctx (Printexc.to_string e) null_pos
 
 ;;

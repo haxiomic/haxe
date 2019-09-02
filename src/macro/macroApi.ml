@@ -50,7 +50,6 @@ type 'value compiler_api = {
 	encode_ctype : Ast.type_hint -> 'value;
 	decode_type : 'value -> t;
 	flush_context : (unit -> t) -> t;
-	typer_ctx : Typecore.typer;
 }
 
 
@@ -77,6 +76,8 @@ type enum_type =
 	| IImportMode
 	| IDisplayKind
 	| IMessage
+	| IFunctionKind
+	| IStringLiteralKind
 
 (**
 	Our access to the interpreter from the macro api
@@ -172,6 +173,8 @@ let enum_name = function
 	| IQuoteStatus -> "QuoteStatus"
 	| IDisplayKind -> "DisplayKind"
 	| IMessage -> "Message"
+	| IFunctionKind -> "FunctionKind"
+	| IStringLiteralKind -> "StringLiteralKind"
 
 let all_enums =
 	let last = IImportMode in
@@ -214,11 +217,18 @@ let null f = function
 
 let encode_enum ?(pos=None) k tag vl = encode_enum k pos tag vl
 
+let encode_string_literal_kind qs =
+	let tag = match qs with
+		| SDoubleQuotes -> 0
+		| SSingleQuotes -> 1
+	in
+	encode_enum IStringLiteralKind tag []
+
 let encode_const c =
 	let tag, pl = match c with
 	| Int s -> 0, [encode_string s]
 	| Float s -> 1, [encode_string s]
-	| String s -> 2, [encode_string s]
+	| String(s,qs) -> 2, [encode_string s;encode_string_literal_kind qs]
 	| Ident s -> 3, [encode_string s]
 	| Regexp (s,opt) -> 4, [encode_string s;encode_string opt]
 	in
@@ -438,8 +448,8 @@ and encode_expr e =
 						"expr",null loop eo;
 					]
 				) vl)]
-			| EFunction (name,f) ->
-				11, [null encode_placed_name name; encode_fun f]
+			| EFunction (kind,f) ->
+				11, [encode_function_kind kind; encode_fun f]
 			| EBlock el ->
 				12, [encode_array (List.map loop el)]
 			| EFor (e,eloop) ->
@@ -504,6 +514,15 @@ and encode_null_expr e =
 	| Some e ->
 		encode_expr e
 
+and encode_function_kind kind =
+	match kind with
+	| FKAnonymous ->
+		encode_enum IFunctionKind 0 []
+	| FKNamed (name,inline) ->
+		encode_enum IFunctionKind 1 [encode_placed_name name; vbool inline]
+	| FKArrow ->
+		encode_enum IFunctionKind 2 []
+
 (* ---------------------------------------------------------------------- *)
 (* EXPR DECODING *)
 
@@ -516,11 +535,17 @@ let opt_list f v =
 let decode_opt_bool v =
 	if v = vnull then false else decode_bool v
 
+let decode_string_literal_kind v =
+	if v = vnull then SDoubleQuotes else match decode_enum v with
+	| 0,[] -> SDoubleQuotes
+	| 1,[] -> SSingleQuotes
+	| _ -> raise Invalid_expr
+
 let decode_const c =
 	match decode_enum c with
 	| 0, [s] -> Int (decode_string s)
 	| 1, [s] -> Float (decode_string s)
-	| 2, [s] -> String (decode_string s)
+	| 2, [s;qs] -> String (decode_string s,decode_string_literal_kind qs)
 	| 3, [s] -> Ident (decode_string s)
 	| 4, [s;opt] -> Regexp (decode_string s, decode_string opt)
 	| 5, [s] -> Ident (decode_string s) (** deprecated CType, keep until 3.0 release **)
@@ -699,6 +724,12 @@ and decode_display_kind v = match (decode_enum v) with
 	| 4, [outermost] -> DKPattern (decode_bool outermost)
 	| _ -> raise Invalid_expr
 
+and decode_function_kind kind = if kind = vnull then FKAnonymous else match decode_enum kind with
+	| 0, [] -> FKAnonymous
+	| 1, [name;inline] -> FKNamed ((decode_string name,Globals.null_pos), decode_opt_bool inline)
+	| 2, [] -> FKArrow
+	| _ -> raise Invalid_expr
+
 and decode_expr v =
 	let rec loop v =
 		let p = decode_pos (field v "pos") in
@@ -741,8 +772,8 @@ and decode_expr v =
 				let final = if vfinal == vnull then false else decode_bool vfinal in
 				((decode_placed_name (field v "name_pos") (field v "name")),final,opt decode_ctype (field v "type"),opt loop (field v "expr"))
 			) (decode_array vl))
-		| 11, [fname;f] ->
-			EFunction (opt (fun v -> decode_string v,Globals.null_pos) fname,decode_fun f)
+		| 11, [kind;f] ->
+			EFunction (decode_function_kind kind,decode_fun f)
 		| 12, [el] ->
 			EBlock (List.map loop (decode_array el))
 		| 13, [e1;e2] ->
@@ -1446,7 +1477,7 @@ let decode_type_def v =
 	) in
 	(* if our package ends with an uppercase letter, then it's the module name *)
 	let pack,name = (match List.rev pack with
-		| last :: l when not (is_lower_ident last) -> List.rev l, last
+		| last :: l when StringHelper.starts_uppercase_identifier last -> List.rev l, last
 		| _ -> pack, fst name
 	) in
 	(pack, name), tdef, pos
@@ -1530,8 +1561,14 @@ let macro_api ccom get_api =
 			encode_string (try Common.find_file (ccom()) file with Not_found -> failwith ("File not found '" ^ file ^ "'"))
 		);
 		"define", vfun2 (fun s v ->
+			let s = decode_string s in
+			let com = ccom() in
+			if com.stage <> CInitMacrosStart then begin
+				let v = if v = vnull then "" else ", " ^ (decode_string v) in
+				com.warning ("Should be used in initialization macros only: haxe.macro.Compiler.define(" ^ s ^ v ^ ")") Globals.null_pos;
+			end;
 			let v = if v = vnull then "" else "=" ^ (decode_string v) in
-			Common.raw_define (ccom()) ((decode_string s) ^ v);
+			Common.raw_define com (s ^ v);
 			vnull
 		);
 		"defined", vfun1 (fun s ->
@@ -1791,6 +1828,8 @@ let macro_api ccom get_api =
 		"add_class_path", vfun1 (fun cp ->
 			let com = ccom() in
 			let cp = decode_string cp in
+			if com.stage <> CInitMacrosStart then
+				com.warning ("Should be used in initialization macros only: haxe.macro.Compiler.addClassPath(" ^ cp ^ ")") Globals.null_pos;
 			let cp = Path.add_trailing_slash cp in
 			com.class_path <- cp :: com.class_path;
 			(match com.get_macros() with
@@ -1805,6 +1844,8 @@ let macro_api ccom get_api =
 		"add_native_lib", vfun1 (fun file ->
 			let file = decode_string file in
 			let com = ccom() in
+			if com.stage <> CInitMacrosStart then
+				com.warning ("Should be used in initialization macros only: haxe.macro.Compiler.addNativeLib(" ^ file ^ ")") Globals.null_pos;
 			NativeLibraryHandler.add_native_lib com file false ();
 			vnull
 		);
@@ -1887,8 +1928,8 @@ let macro_api ccom get_api =
 			List.iter (fun v ->
 				let s = decode_string v in
 				let s = Path.unique_full_path s in
-				CompilationServer.taint_modules cs s;
-				CompilationServer.remove_files cs s;
+				cs#taint_modules s;
+				cs#remove_files s;
 			) (decode_array a);
 			vnull
 		);

@@ -12,7 +12,9 @@ type safety_report = {
 }
 
 let add_error report msg pos =
-	report.sr_errors <- { sm_msg = ("Null safety: " ^ msg); sm_pos = pos; } :: report.sr_errors;
+	let error = { sm_msg = ("Null safety: " ^ msg); sm_pos = pos; } in
+	if not (List.mem error report.sr_errors) then
+		report.sr_errors <- error :: report.sr_errors;
 
 type scope_type =
 	| STNormal
@@ -51,7 +53,12 @@ let fail ?msg hxpos mlpos =
 (**
 	Returns human-readable string representation of specified type
 *)
-let str_type t = s_type (print_context()) t
+let str_type = s_type (print_context())
+
+(**
+	Returns human-readable representation of specified expression
+*)
+let str_expr = s_expr_pretty false "\t" true str_type
 
 let is_string_type t =
 	match t with
@@ -79,10 +86,11 @@ let rec is_nullable_type = function
 (**
 	If `expr` is a TCast or TMeta, returns underlying expression (recursively bypassing nested casts).
 	Otherwise returns `expr` as is.
+	If `stay_safe` is true, then casts to non-nullable types won't be revealed and an expression will stay intact.
 *)
-let rec reveal_expr expr =
+let rec reveal_expr ?(stay_safe=true) expr =
 	match expr.eexpr with
-		| TCast (e, _) -> reveal_expr e
+		| TCast (e, _) when not stay_safe || is_nullable_type expr.etype -> reveal_expr e
 		| TMeta (_, e) -> reveal_expr e
 		| _ -> expr
 
@@ -90,7 +98,7 @@ let rec reveal_expr expr =
 	Try to get a human-readable representation of an `expr`
 *)
 let symbol_name expr =
-	match (reveal_expr expr).eexpr with
+	match (reveal_expr ~stay_safe:false expr).eexpr with
 		| TField (_, access) -> field_name access
 		| TIdent name -> name
 		| TLocal { v_name = name } -> name
@@ -129,7 +137,7 @@ type safety_subject =
 	| SNotSuitable
 
 let rec get_subject loose_safety expr =
-	match expr.eexpr with
+	match (reveal_expr expr).eexpr with
 		| TLocal v ->
 			SLocalVar v.v_id
 		| TField ({ eexpr = TTypeExpr _ }, FStatic (cls, field)) when loose_safety || (has_class_field_flag field CfFinal) ->
@@ -148,7 +156,7 @@ let rec get_subject loose_safety expr =
 		|_ -> SNotSuitable
 
 let rec is_suitable loose_safety expr =
-	match expr.eexpr with
+	match (reveal_expr expr).eexpr with
 		| TField ({ eexpr = TConst TThis }, FInstance _)
 		| TField ({ eexpr = TLocal _ }, (FInstance _ | FAnon _))
 		| TField ({ eexpr = TTypeExpr _ }, FStatic _)
@@ -279,6 +287,15 @@ let rec is_dead_end e =
 		| _ -> false
 
 (**
+	Check if `expr` is a `trace` (not a call, but identifier itself)
+*)
+let is_trace expr =
+	match expr.eexpr with
+	| TIdent "`trace" -> true
+	| TField (_, FStatic ({ cl_path = (["haxe"], "Log") }, { cf_name = "trace" })) -> true
+	| _ -> false
+
+(**
 	If `t` represents `Null<SomeType>` this function returns `SomeType`.
 *)
 let rec unfold_null t =
@@ -328,6 +345,7 @@ let rec process_condition loose_safety condition (is_nullable_expr:texpr->bool) 
 	let nulls = ref []
 	and not_nulls = ref [] in
 	let add to_nulls expr =
+		let expr = reveal_expr expr in
 		if to_nulls then nulls := expr :: !nulls
 		else not_nulls := expr :: !not_nulls
 	in
@@ -671,6 +689,11 @@ class local_safety (mode:safety_mode) =
 		method get_safe_locals_copy =
 			Hashtbl.copy (self#get_current_scope#get_safe_locals)
 		(**
+			Remove locals, which don't exist in `sample`, from safety.
+		*)
+		method filter_safety sample =
+			self#get_current_scope#filter_safety sample
+		(**
 			Should be called upon local function declaration.
 		*)
 		method function_declared (immediate_execution:bool) (fn:tfunc) =
@@ -774,7 +797,7 @@ class local_safety (mode:safety_mode) =
 			(** The first check to find out which vars will become unsafe in a loop *)
 			first_check();
 			(* If local var became safe in a loop, then we need to remove it from safety to make it unsafe outside of a loop again *)
-			self#get_current_scope#filter_safety original_safe_locals;
+			self#filter_safety original_safe_locals;
 			Option.may (fun action -> action()) intermediate_action;
 			(** The second check with unsafe vars removed from safety *)
 			second_check()
@@ -785,7 +808,7 @@ class local_safety (mode:safety_mode) =
 			let original_safe_locals = self#get_safe_locals_copy in
 			check_expr try_block;
 			(* Remove locals which became safe inside of a try block from safety *)
-			self#get_current_scope#filter_safety original_safe_locals;
+			self#filter_safety original_safe_locals;
 			let safe_after_try = self#get_safe_locals_copy
 			and safe_after_catches = self#get_safe_locals_copy in
 			List.iter
@@ -809,15 +832,19 @@ class local_safety (mode:safety_mode) =
 			match expr.eexpr with
 				| TIf (condition, if_body, else_body) ->
 					condition_callback condition;
-					let (nulls, not_nulls) =
+					let (_, not_nulls) =
 						process_condition (mode <> SMStrict) condition is_nullable_expr (fun _ -> ())
 					in
+					(* Don't touch expressions, which already was safe before this `if` *)
+					let filter = List.filter (fun e -> not (self#is_safe e)) in
+					let not_nulls = filter not_nulls in
 					let not_condition =
 						{ eexpr = TUnop (Not, Prefix, condition); etype = condition.etype; epos = condition.epos }
 					in
-					let (else_nulls, else_not_nulls) =
+					let (_, else_not_nulls) =
 						process_condition (mode <> SMStrict) not_condition is_nullable_expr (fun _ -> ())
 					in
+					let else_not_nulls = filter else_not_nulls in
 					(** execute `if_body` with known not-null variables *)
 					List.iter self#get_current_scope#add_to_safety not_nulls;
 					body_callback if_body;
@@ -920,6 +947,7 @@ class expr_checker mode immediate_execution report =
 			Haxe type system lies sometimes.
 		*)
 		method private is_nullable_expr e =
+			let e = reveal_expr e in
 			match e.eexpr with
 				| TConst TNull -> true
 				| TConst _ -> false
@@ -1134,11 +1162,13 @@ class expr_checker mode immediate_execution report =
 			return_types <- fn.tf_type :: return_types;
 			if immediate_execution || mode = SMLoose then
 				begin
+					let original_safe_locals = local_safety#get_safe_locals_copy in
 					(* Start pretending to ignore errors *)
 					is_pretending <- true;
 					self#check_expr fn.tf_expr;
 					(* Now we know, which vars will become unsafe in this closure. Stop pretending and perform real check *)
 					is_pretending <- false;
+					local_safety#filter_safety original_safe_locals;
 					self#check_expr fn.tf_expr
 				end
 			else
@@ -1238,6 +1268,8 @@ class expr_checker mode immediate_execution report =
 				| None -> ()
 				(* Local named functions like `function fn() {}`, which are generated as `var fn = null; fn = function(){}` *)
 				| Some { eexpr = TConst TNull } when v.v_kind = VUser TVOLocalFunction -> ()
+				(* `_this = null` is generated for local `inline function` *)
+				| Some { eexpr = TConst TNull } when v.v_kind = VGenerated -> ()
 				| Some e ->
 					let local = { eexpr = TLocal v; epos = v.v_pos; etype = v.v_type } in
 					self#check_binop OpAssign local e p
@@ -1290,7 +1322,24 @@ class expr_checker mode immediate_execution report =
 			);
 			match follow callee.etype with
 				| TFun (types, _) ->
-					self#check_args callee args types
+					if is_trace callee then
+						let real_args =
+							match List.rev args with
+								| { eexpr = TObjectDecl fields } :: [first_arg] ->
+									(try
+										let arr =
+											snd (List.find (fun ((name, _, _), _) -> name = "customParams") fields)
+										in
+										match arr.eexpr with
+											| TArrayDecl rest_args -> first_arg :: rest_args
+											| _ -> args
+									with Not_found -> args
+									)
+								| _ -> args
+						in
+						List.iter self#check_expr real_args
+					else
+						self#check_args callee args types
 				| _ ->
 					List.iter self#check_expr args
 		(**
@@ -1324,17 +1373,17 @@ class class_checker cls immediate_execution report  =
 			Entry point for checking a class
 		*)
 		method check =
-			(* if snd cls.cl_path = "AllVarsInitializedInConstructor_thisShouldBeUsable" then
-				Option.may (fun f -> Option.may (fun e -> print_endline (s_expr (fun t -> "") e)) f.cf_expr) cls.cl_constructor; *)
 			if is_safe_class && (not cls.cl_extern) && (not cls.cl_interface) then
 				self#check_var_fields;
 			let check_field is_static f =
-				(* if f.cf_name = "wtf_foo" then
-					Option.may (fun e -> print_endline (s_expr str_type e)) f.cf_expr; *)
 				match (safety_mode (cls_meta @ f.cf_meta)) with
 					| SMOff -> ()
 					| mode ->
-						Option.may ((self#get_checker mode)#check_root_expr) f.cf_expr;
+						(match f.cf_expr with
+							| None -> ()
+							| Some expr ->
+								(self#get_checker mode)#check_root_expr expr
+						);
 						self#check_accessors is_static f
 			in
 			if is_safe_class then

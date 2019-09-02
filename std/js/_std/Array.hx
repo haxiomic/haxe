@@ -62,8 +62,17 @@ extern class Array<T> {
 		return (cast this).slice();
 	}
 
-	function map<S>(f:T->S):Array<S>;
-	function filter(f:T->Bool):Array<T>;
+	@:runtime inline function map<S>(f:T->S):Array<S> {
+		var result:Array<S> = js.Syntax.construct(Array, length);
+		for(i in 0...length) {
+			result[i] = f(this[i]);
+		}
+		return result;
+	}
+
+	@:runtime inline function filter(f:T->Bool):Array<T> {
+		return [for (v in this) if (f(v)) v];
+	}
 
 	@:runtime inline function iterator():Iterator<T> {
 		return @:privateAccess HxOverrides.iter(this);

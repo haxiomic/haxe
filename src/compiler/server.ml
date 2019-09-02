@@ -16,8 +16,7 @@ let measure_times = ref false
 let prompt = ref false
 let start_time = ref (Timer.get_time())
 
-let is_debug_run() =
-	try Sys.getenv "HAXEDEBUG" = "1" with _ -> false
+let is_debug_run = try Sys.getenv "HAXEDEBUG" = "1" with _ -> false
 
 type context = {
 	com : Common.context;
@@ -53,8 +52,9 @@ let check_display_flush ctx f_otherwise = match ctx.com.json_out with
 		| _ ->
 			f_otherwise ()
 		end
-	| Some(_,f,_) ->
-		if ctx.has_error then begin
+	| Some api ->
+		(* If there's a --next and we're in display mode, try that one. *)
+		if ctx.has_error && not (ctx.has_next && ctx.com.display.dms_display) then begin
 			let errors = List.map (fun msg ->
 				let msg,p,i = match msg with
 					| CMInfo(msg,p) -> msg,p,3
@@ -67,7 +67,7 @@ let check_display_flush ctx f_otherwise = match ctx.com.json_out with
 					"message",JString msg;
 				]
 			) (List.rev ctx.messages) in
-			f errors
+			api.send_error errors
 		end
 
 let default_flush ctx =
@@ -132,18 +132,17 @@ let ssend sock str =
 let current_stdin = ref None
 
 let parse_file cs com file p =
+	let cc = CommonCache.get_cache cs com in
 	let ffile = Path.unique_full_path file in
 	let is_display_file = ffile = (DisplayPosition.display_position#get).pfile in
 	match is_display_file, !current_stdin with
 	| true, Some stdin when Common.defined com Define.DisplayStdin ->
 		TypeloadParse.parse_file_from_string com file p stdin
 	| _ ->
-		let sign = Define.get_signature com.defines in
 		let ftime = file_time ffile in
-		let fkey = (ffile,sign) in
 		let data = Std.finally (Timer.timer ["server";"parser cache"]) (fun () ->
 			try
-				let cfile = CompilationServer.find_file cs fkey in
+				let cfile = cc#find_file ffile in
 				if cfile.c_time <> ftime then raise Not_found;
 				Parser.ParseSuccess(cfile.c_package,cfile.c_decls)
 			with Not_found ->
@@ -159,7 +158,7 @@ let parse_file cs com file p =
 							let ident = Hashtbl.find Parser.special_identifier_files ffile in
 							Printf.sprintf "not cached, using \"%s\" define" ident,true
 						with Not_found ->
-							CompilationServer.cache_file cs fkey ftime data;
+							cc#cache_file ffile ftime data;
 							"cached",false
 						end
 				in
@@ -187,7 +186,7 @@ module ServerCompilationContext = struct
 		(* A list of delays which are run after compilation *)
 		mutable delays : (unit -> unit) list;
 		(* A list of modules which were (perhaps temporarily) removed from the cache *)
-		mutable removed_modules : ((path * string) * module_def) list;
+		mutable removed_modules : (context_cache * path * module_def) list;
 		(* True if it's an actual compilation, false if it's a display operation *)
 		mutable was_compilation : bool;
 	}
@@ -214,7 +213,7 @@ module ServerCompilationContext = struct
 		List.iter (fun f -> f()) fl
 
 	let is_removed_module sctx m =
-		List.exists (fun (_,m') -> m == m') sctx.removed_modules
+		List.exists (fun (_,_,m') -> m == m') sctx.removed_modules
 
 	let reset sctx =
 		Hashtbl.clear sctx.changed_directories;
@@ -238,7 +237,7 @@ let get_changed_directories sctx (ctx : Typecore.typer) =
 	with Not_found ->
 		let dirs = try
 			(* Next, get all directories from the cache and filter the ones that haven't changed. *)
-			let all_dirs = CompilationServer.find_directories cs sign in
+			let all_dirs = cs#find_directories sign in
 			let dirs = List.fold_left (fun acc dir ->
 				try
 					let time' = stat dir.c_path in
@@ -246,17 +245,17 @@ let get_changed_directories sctx (ctx : Typecore.typer) =
 						dir.c_mtime <- time';
 						let sub_dirs = Path.find_directories (platform_name com.platform) false [dir.c_path] in
 						List.iter (fun dir ->
-							if not (CompilationServer.has_directory cs sign dir) then begin
+							if not (cs#has_directory sign dir) then begin
 								let time = stat dir in
 								ServerMessage.added_directory com "" dir;
-								CompilationServer.add_directory cs sign (CompilationServer.create_directory dir time)
+								cs#add_directory sign (CompilationServer.create_directory dir time)
 							end;
 						) sub_dirs;
 						(CompilationServer.create_directory dir.c_path time') :: acc
 					end else
 						acc
 				with Unix.Unix_error _ ->
-					CompilationServer.remove_directory cs sign dir.c_path;
+					cs#remove_directory sign dir.c_path;
 					ServerMessage.removed_directory com "" dir.c_path;
 					acc
 			) [] all_dirs in
@@ -265,7 +264,7 @@ let get_changed_directories sctx (ctx : Typecore.typer) =
 		with Not_found ->
 			(* There were no directories in the cache, so this must be a new context. Let's add
 				an empty list to make sure no crazy recursion happens. *)
-			CompilationServer.add_directories cs sign [];
+			cs#add_directories sign [];
 			(* Register the delay that is going to populate the cache dirs. *)
 			sctx.delays <- (fun () ->
 				let dirs = ref [] in
@@ -279,7 +278,7 @@ let get_changed_directories sctx (ctx : Typecore.typer) =
 				List.iter add_dir com.class_path;
 				List.iter add_dir (Path.find_directories (platform_name com.platform) true com.class_path);
 				ServerMessage.found_directories com "" !dirs;
-				CompilationServer.add_directories cs sign !dirs
+				cs#add_directories sign !dirs
 			) :: sctx.delays;
 			(* Returning [] should be fine here because it's a new context, so we won't do any
 				shadowing checks anyway. *)
@@ -295,13 +294,11 @@ let get_changed_directories sctx (ctx : Typecore.typer) =
    [Some m'] where [m'] is the module responsible for [m] not being reusable. *)
 let check_module sctx ctx m p =
 	let com = ctx.Typecore.com in
-	let cs = sctx.cs in
-	let sign = Define.get_signature com.defines in
+	let cc = CommonCache.get_cache sctx.cs com in
 	let content_changed m file =
 		let ffile = Path.unique_full_path file in
-		let fkey = (ffile,sign) in
 		try
-			let cfile = CompilationServer.find_file cs fkey in
+			let cfile = cc#find_file ffile in
 			(* We must use the module path here because the file path is absolute and would cause
 				positions in the parsed declarations to differ. *)
 			let new_data = TypeloadParse.parse_module ctx m.m_path p in
@@ -433,7 +430,7 @@ let add_modules sctx ctx m p =
 					| TEnumDecl e ->
 						let rec loop acc = function
 							| [] -> ()
-							| (Meta.RealPath,[Ast.EConst (Ast.String path),_],_) :: l ->
+							| (Meta.RealPath,[Ast.EConst (Ast.String(path,_)),_],_) :: l ->
 								e.e_path <- Ast.parse_path path;
 								e.e_meta <- (List.rev acc) @ l;
 							| x :: l -> loop (x::acc) l
@@ -456,11 +453,10 @@ let add_modules sctx ctx m p =
 let type_module sctx (ctx:Typecore.typer) mpath p =
 	let t = Timer.timer ["server";"module cache"] in
 	let com = ctx.Typecore.com in
-	let cs = sctx.cs in
-	let sign = Define.get_signature com.defines in
+	let cc = CommonCache.get_cache sctx.cs com in
 	sctx.mark_loop <- sctx.mark_loop + 1;
 	try
-		let m = CompilationServer.find_module cs (mpath,sign) in
+		let m = cc#find_module mpath in
 		let tcheck = Timer.timer ["server";"module cache";"check"] in
 		begin match check_module sctx ctx m p with
 		| None -> ()
@@ -483,17 +479,17 @@ let type_module sctx (ctx:Typecore.typer) mpath p =
 let create sctx write params =
 	let cs = sctx.cs in
 	let recache_removed_modules () =
-		List.iter (fun (k,m) ->
+		List.iter (fun (cc,k,m) ->
 			try
-				ignore(CompilationServer.find_module sctx.cs k);
+				ignore(cc#find_module k);
 			with Not_found ->
-				CompilationServer.cache_module sctx.cs k m
+				cc#cache_module k m
 		) sctx.removed_modules;
 		sctx.removed_modules <- []
 	in
 	let maybe_cache_context com =
 		if com.display.dms_full_typing then begin
-			CompilationServer.cache_context sctx.cs com;
+			CommonCache.cache_context sctx.cs com;
 			ServerMessage.cached_modules com "" (List.length com.modules);
 			sctx.removed_modules <- [];
 		end else
@@ -527,17 +523,17 @@ let create sctx write params =
 			current file in order to run diagnostics on it again. *)
 		if ctx.com.display.dms_display || (match ctx.com.display.dms_kind with DMDiagnostics _ -> true | _ -> false) then begin
 			let file = (DisplayPosition.display_position#get).pfile in
-			let fkey = (file,sign) in
 			(* force parsing again : if the completion point have been changed *)
-			CompilationServer.remove_file cs fkey;
-			sctx.removed_modules <- CompilationServer.filter_modules cs file;
+			cs#remove_files file;
+			sctx.removed_modules <- cs#filter_modules file;
 			add_delay sctx recache_removed_modules;
 		end;
 		try
 			if (Hashtbl.find sctx.class_paths sign) <> ctx.com.class_path then begin
 				ServerMessage.class_paths_changed ctx.com "";
 				Hashtbl.replace sctx.class_paths sign ctx.com.class_path;
-				CompilationServer.clear_directories cs sign;
+				cs#clear_directories sign;
+				(cs#get_context sign)#set_initialized false;
 			end;
 		with Not_found ->
 			Hashtbl.add sctx.class_paths sign ctx.com.class_path;
@@ -563,6 +559,68 @@ let init_new_compilation sctx =
 	sctx.compilation_mark <- sctx.mark_loop;
 	start_time := get_time()
 
+let cleanup () =
+	begin match !MacroContext.macro_interp_cache with
+	| Some interp -> EvalContext.GlobalState.cleanup interp
+	| None -> ()
+	end
+
+module Ring = struct
+	type 'a t = {
+		values : 'a array;
+		mutable index : int;
+		mutable num_filled : int;
+	}
+
+	let create len x = {
+		values = Array.make len x;
+		index = 0;
+		num_filled = 0;
+	}
+
+	let push r x =
+		r.values.(r.index) <- x;
+		r.num_filled <- r.num_filled + 1;
+		if r.index = Array.length r.values - 1 then begin
+			r.index <- 0;
+		end else
+			r.index <- r.index + 1
+
+	let iter r f =
+		let len = Array.length r.values in
+		for i = 0 to len - 1 do
+			let off = r.index + i in
+			let off = if off >= len then off - len else off in
+			f r.values.(off)
+		done
+
+	let fold r acc f =
+		let len = Array.length r.values in
+		let rec loop i acc =
+			if i = len then
+				acc
+			else begin
+				let off = r.index + i in
+				let off = if off >= len then off - len else off in
+				loop (i + 1) (f acc r.values.(off))
+			end
+		in
+		loop 0 acc
+
+	let is_filled r =
+		r.num_filled >= Array.length r.values
+
+	let reset_filled r =
+		r.num_filled <- 0
+end
+
+let gc_heap_stats () =
+	let stats = Gc.quick_stat() in
+	stats.major_words,stats.heap_words
+
+let fmt_percent f =
+	int_of_float (f *. 100.)
+
 (* The server main loop. Waits for the [accept] call to then process the sent compilation
    parameters through [process_params]. *)
 let wait_loop process_params verbose accept =
@@ -574,7 +632,43 @@ let wait_loop process_params verbose accept =
 	TypeloadModule.type_module_hook := type_module sctx;
 	MacroContext.macro_enable_cache := true;
 	TypeloadParse.parse_hook := parse_file cs;
-	let run_count = ref 0 in
+	let ring = Ring.create 10 0. in
+	let heap_stats_start = ref (gc_heap_stats()) in
+	let update_heap () =
+		(* On every compilation: Track how many words were allocated for this compilation (working memory). *)
+		let heap_stats_now = gc_heap_stats() in
+		let words_allocated = (fst heap_stats_now) -. (fst !heap_stats_start) in
+		let heap_size = float_of_int (snd heap_stats_now) in
+		Ring.push ring words_allocated;
+		if Ring.is_filled ring then begin
+			Ring.reset_filled ring;
+			let t0 = get_time() in
+			let stats = Gc.stat() in
+			let live_words = float_of_int stats.live_words in
+			 (* Maximum working memory for the last X compilations. *)
+			let max = Ring.fold ring 0. (fun m i -> if i > m then i else m) in
+			(* Maximum heap size needed for the last X compilations = sum of what's live + max working memory. *)
+			let needed_max = live_words +. max in
+			(* Additional heap percentage needed = what's live / max of what was live. *)
+			let percent_needed = (1. -. live_words /. needed_max) in
+			(* Effective cache size percentage = what's live / heap size. *)
+			let percent_used = live_words /. heap_size in
+			(* Set allowed space_overhead to the maximum of what we needed during the last X compilations. *)
+			let new_space_overhead = int_of_float ((percent_needed +. 0.05) *. 100.) in
+			let old_gc = Gc.get() in
+			Gc.set { old_gc with Gc.space_overhead = new_space_overhead; };
+			(* Compact if less than 80% of our heap words consist of the cache and there's less than 50% overhead. *)
+			let do_compact = percent_used < 0.8 && percent_needed < 0.5 in
+			begin if do_compact then
+				Gc.compact()
+			else
+				Gc.full_major();
+			end;
+			Gc.set old_gc;
+			ServerMessage.gc_stats (get_time() -. t0) stats do_compact new_space_overhead
+		end;
+		heap_stats_start := heap_stats_now;
+	in
 	(* Main loop: accept connections and process arguments *)
 	while true do
 		let read, write, close = accept() in
@@ -614,7 +708,7 @@ let wait_loop process_params verbose accept =
 			let estr = Printexc.to_string e in
 			ServerMessage.uncaught_error estr;
 			(try write ("\x02\n" ^ estr); with _ -> ());
-			if is_debug_run() then print_endline (estr ^ "\n" ^ Printexc.get_backtrace());
+			if is_debug_run then print_endline (estr ^ "\n" ^ Printexc.get_backtrace());
 			if e = Out_of_memory then begin
 				close();
 				exit (-1);
@@ -623,38 +717,44 @@ let wait_loop process_params verbose accept =
 		(* Close connection and perform some cleanup *)
 		close();
 		current_stdin := None;
-		(* prevent too much fragmentation by doing some compactions every X run *)
-		if sctx.was_compilation then incr run_count;
-		if !run_count mod 10 = 0 then begin
-			run_count := 1;
-			let t0 = get_time() in
-			Gc.compact();
-			ServerMessage.gc_stats (get_time() -. t0);
-		end else Gc.minor();
+		cleanup();
+		update_heap();
 	done
+
+let mk_length_prefixed_communication chin chout =
+	let chin = IO.input_channel chin in
+	let chout = IO.output_channel chout in
+
+	let bout = Buffer.create 0 in
+
+	let read = fun () ->
+		let len = IO.read_i32 chin in
+		IO.really_nread_string chin len
+	in
+
+	let write = Buffer.add_string bout in
+
+	let close = fun() ->
+		IO.write_i32 chout (Buffer.length bout);
+		IO.nwrite_string chout (Buffer.contents bout);
+		IO.flush chout
+	in
+
+	fun () ->
+		Buffer.clear bout;
+		read, write, close
 
 (* The accept-function to wait for a stdio connection. *)
 let init_wait_stdio() =
 	set_binary_mode_in stdin true;
 	set_binary_mode_out stderr true;
+	mk_length_prefixed_communication stdin stderr
 
-	let chin = IO.input_channel stdin in
-	let cherr = IO.output_channel stderr in
-
-	let berr = Buffer.create 0 in
-	let read = fun () ->
-		let len = IO.read_i32 chin in
-		IO.really_nread_string chin len
-	in
-	let write = Buffer.add_string berr in
-	let close = fun() ->
-		IO.write_i32 cherr (Buffer.length berr);
-		IO.nwrite_string cherr (Buffer.contents berr);
-		IO.flush cherr
-	in
-	fun() ->
-		Buffer.clear berr;
-		read, write, close
+(* Connect to given host/port and return accept function for communication *)
+let init_wait_connect host port =
+	let host = Unix.inet_addr_of_string host in
+	let chin, chout = Unix.open_connection (Unix.ADDR_INET (host,port)) in
+	mk_length_prefixed_communication chin chout
 
 (* The accept-function to wait for a socket connection. *)
 let init_wait_socket host port =

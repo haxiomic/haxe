@@ -313,9 +313,9 @@ let ns_access cf =
 	try
 		let (_,params,_) = Meta.get Meta.Ns cf.cf_meta in
 		match params with
-		| [(EConst (String ns),_)] ->
+		| [(EConst (String(ns,_)),_)] ->
 			Some (HMName (cf.cf_name, HNNamespace ns))
-		| [(EConst (String ns),_); (EConst (Ident "internal"),_)] ->
+		| [(EConst (String(ns,_)),_); (EConst (Ident "internal"),_)] ->
 			Some (HMName (cf.cf_name, HNInternal (Some ns)))
 		| _ -> assert false
 	with Not_found ->
@@ -657,7 +657,7 @@ let to_utf8 str =
 	with
 		UTF8.Malformed_code ->
 			let b = UTF8.Buf.create 0 in
-			String.iter (fun c -> UTF8.Buf.add_char b (UChar.of_char c)) str;
+			String.iter (fun c -> UTF8.Buf.add_char b (UCharExt.of_char c)) str;
 			UTF8.Buf.contents b
 
 let gen_constant ctx c t p =
@@ -2036,8 +2036,8 @@ let extract_meta meta =
 		| (Meta.Meta,[ECall ((EConst (Ident n),_),args),_],_) :: l ->
 			let mk_arg (a,p) =
 				match a with
-				| EConst (String s) -> (None, s)
-				| EBinop (OpAssign,(EConst (Ident n),_),(EConst (String s),_)) -> (Some n, s)
+				| EConst (String(s,_)) -> (None, s)
+				| EBinop (OpAssign,(EConst (Ident n),_),(EConst (String(s,_)),_)) -> (Some n, s)
 				| _ -> abort "Invalid meta definition" p
 			in
 			{ hlmeta_name = n; hlmeta_data = Array.of_list (List.map mk_arg args) } :: loop l
@@ -2455,7 +2455,7 @@ let generate_class ctx c =
 			| x :: l ->
 				match x with
 				| ((Meta.Getter | Meta.Setter),[EConst (Ident f),_],_) -> ident f
-				| (Meta.Ns,[EConst (String ns),_],_) -> HMName (f.cf_name,HNNamespace ns)
+				| (Meta.Ns,[EConst (String(ns,_)),_],_) -> HMName (f.cf_name,HNNamespace ns)
 				| (Meta.Protected,[],_) -> protect()
 				| _ -> loop_meta l
 		in

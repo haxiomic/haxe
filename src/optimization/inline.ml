@@ -357,6 +357,7 @@ class inline_state ctx ethis params cf f p = object(self)
 			else begin
 				let vik = match e.eexpr with
 					| TLocal _ when i.i_abstract_this -> VIInline
+					| TConst TNull -> VIDoNotInline
 					| TLocal _ | TConst _ ->
 						if not i.i_write then VIInline else VIDoNotInline
 					| TFunction _ ->
@@ -428,13 +429,21 @@ class inline_state ctx ethis params cf f p = object(self)
 		(*
 			Build the expr/var subst list
 		*)
-		let ethis = (match ethis.eexpr with TConst TSuper -> { ethis with eexpr = TConst TThis } | _ -> ethis) in
-		let vthis = alloc_var VInlined "_this" ethis.etype ethis.epos in
-		let args1 = (ethis :: params) in
-		let args2 = ((vthis,None) :: f.tf_args) in
-		let vars = loop [] args1 args2 true in
-		_inlined_vars <- vars; (* Order is reversed due to tail-recursion *)
-		vthis
+		let set_inlined_vars args1 args2 =
+			let vars = loop [] args1 args2 true in
+			_inlined_vars <- vars; (* Order is reversed due to tail-recursion *)
+		in
+		match ethis.eexpr with
+		| TConst TNull ->
+			set_inlined_vars params f.tf_args;
+			None
+		| _ ->
+			let ethis = (match ethis.eexpr with TConst TSuper -> { ethis with eexpr = TConst TThis } | _ -> ethis) in
+			let vthis = alloc_var VInlined "_this" ethis.etype ethis.epos in
+			let args1 = (ethis :: params) in
+			let args2 = ((vthis,None) :: f.tf_args) in
+			set_inlined_vars args1 args2;
+			Some vthis
 
 	method finalize config e tl tret p =
 		let has_params,map_type = match config with Some config -> config | None -> inline_default_config cf ethis.etype in
@@ -537,21 +546,31 @@ class inline_state ctx ethis params cf f p = object(self)
 			| _ -> unify_func());
 		end;
 		let vars = Hashtbl.create 0 in
-		let rec map_var v =
+		let rec map_var map_type v =
 			if not (Hashtbl.mem vars v.v_id) then begin
 				Hashtbl.add vars v.v_id ();
 				if not (self#read v).i_outside then begin
 					v.v_type <- map_type v.v_type;
 					match v.v_extra with
 					| Some(tl,Some e) ->
-						v.v_extra <- Some(tl,Some (map_expr_type e));
+						v.v_extra <- Some(tl,Some (map_expr_type map_type e));
 					| _ ->
 						()
 				end
 			end;
 			v
-		and map_expr_type e = Type.map_expr_type map_expr_type map_type map_var e in
-		map_expr_type e
+		and map_expr_type map_type e =
+			(*
+				No need to change typing of arguments of inlined call
+				because they were already properly typed prior to inlining.
+			*)
+			let map_type =
+				if List.memq e params then (fun t -> t)
+				else map_type
+			in
+			Type.map_expr_type (map_expr_type map_type) map_type (map_var map_type) e
+		in
+		map_expr_type map_type e
 end
 
 let rec type_inline ctx cf f ethis params tret config p ?(self_calling_closure=false) force =
@@ -567,7 +586,7 @@ let rec type_inline ctx cf f ethis params tret config p ?(self_calling_closure=f
 		| Some e -> Some e)
 	with Exit ->
 	let state = new inline_state ctx ethis params cf f p in
-	let vthis = state#initialize in
+	let vthis_opt = state#initialize in
 	let opt f = function
 		| None -> None
 		| Some e -> Some (f e)
@@ -580,7 +599,10 @@ let rec type_inline ctx cf f ethis params tret config p ?(self_calling_closure=f
 		else if ExtType.is_void t then unify_min ctx el
 		else t
 	in
-	let map_pos = if self_calling_closure then (fun e -> e) else (fun e -> { e with epos = p }) in
+	let map_pos =
+		if self_calling_closure || Common.defined ctx.com Define.KeepInlinePositions then (fun e -> e)
+		else (fun e -> { e with epos = p })
+	in
 	let rec map term in_call e =
 		let po = e.epos in
 		let e = map_pos e in
@@ -595,9 +617,14 @@ let rec type_inline ctx cf f ethis params tret config p ?(self_calling_closure=f
 			let e = { e with eexpr = TLocal l.i_subst } in
 			if l.i_abstract_this then mk (TCast(e,None)) v.v_type e.epos else e
 		| TConst TThis ->
-			let l = state#read vthis in
-			l.i_read <- l.i_read + (if !in_loop then 2 else 1);
-			{ e with eexpr = TLocal l.i_subst }
+			(match vthis_opt with
+			| Some vthis ->
+				let l = state#read vthis in
+				l.i_read <- l.i_read + (if !in_loop then 2 else 1);
+				{ e with eexpr = TLocal l.i_subst }
+			| None ->
+				error "Could not inline `this` outside of an instance context" po
+			)
 		| TVar (v,eo) ->
 			{ e with eexpr = TVar ((state#declare v).i_subst,opt (map false false) eo)}
 		| TReturn eo when not state#in_local_fun ->
@@ -743,7 +770,13 @@ let rec type_inline ctx cf f ethis params tret config p ?(self_calling_closure=f
 			Type.map_expr (map false false) e
 	in
 	let e = map true false f.tf_expr in
-	let tl = List.map (fun e -> "",false,e.etype) params in
+	let rec arg_types params tf_args =
+		match params, tf_args with
+		| e :: rest_params, _ :: rest_args -> ("",false,e.etype) :: arg_types rest_params rest_args
+		| [], (_, Some e) :: rest_args -> ("",true,mk_mono()) :: arg_types params rest_args
+		| _ -> []
+	in
+	let tl = arg_types params f.tf_args in
 	let e = state#finalize config e tl tret p in
 	if Meta.has (Meta.Custom ":inlineDebug") ctx.meta then begin
 		let se t = s_expr_pretty true t true (s_type (print_context())) in

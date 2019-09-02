@@ -875,6 +875,27 @@ class TestStrict {
 			(function() s.length)();
 		}
 	}
+
+	static function issue8122_abstractOnTopOfNullable() {
+		var x:NullFloat = null;
+		var y:Float = x.val();
+		x += x;
+	}
+
+	static function issue8443_nullPassedToInline_shouldPass() {
+		inline function method(?map: (Int)->Int) {
+			return map != null ? map(0) : -1;
+		}
+
+		var x:Int = method();
+	}
+
+	static function issue7900_trace() {
+		var x:Null<()->String> = null;
+		trace(x);
+		trace("hi", x);
+		trace("hi", shouldFail(x()));
+	}
 }
 
 private class FinalNullableFields {
@@ -908,4 +929,14 @@ private class Child extends Parent {
 	static var tmp:Any = '';
 	override public function execute(cb:()->Void) tmp = cb;
 	public function childExecute(cb:()->Void) cb();
+}
+
+abstract NullFloat(Null<Float>) from Null<Float> to Null<Float> {
+	public inline function val(): Float {
+		return this != null ? this : 0.0;
+	}
+
+	@:op(A + B) static inline function addOp1(lhs: NullFloat, rhs: Float): Float {
+		return lhs != null ? lhs.val() + rhs : rhs;
+	}
 }

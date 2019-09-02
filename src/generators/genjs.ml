@@ -52,7 +52,7 @@ type ctx = {
 	has_interface_check : bool;
 	es_version : int;
 	mutable current : tclass;
-	mutable statics : (tclass * string * texpr) list;
+	mutable statics : (tclass * tclass_field * texpr) list;
 	mutable inits : texpr list;
 	mutable tabs : string;
 	mutable in_value : tvar option;
@@ -72,7 +72,7 @@ let get_exposed ctx path meta =
 	try
 		let (_, args, pos) = Meta.get Meta.Expose meta in
 		(match args with
-			| [ EConst (String s), _ ] -> [s]
+			| [ EConst (String(s,_)), _ ] -> [s]
 			| [] -> [path]
 			| _ -> abort "Invalid @:expose parameters" pos)
 	with Not_found -> []
@@ -1042,7 +1042,7 @@ let gen_class_static_field ctx c f =
 			gen_value ctx e;
 			newline ctx;
 		| _ ->
-			ctx.statics <- (c,f.cf_name,e) :: ctx.statics
+			ctx.statics <- (c,f,e) :: ctx.statics
 
 let can_gen_class_field ctx = function
 	| { cf_expr = (None | Some { eexpr = TConst TNull }) } when not (has_feature ctx "Type.getInstanceFields") ->
@@ -1446,7 +1446,9 @@ let generate_enum ctx e =
 	flush ctx
 
 let generate_static ctx (c,f,e) =
-	print ctx "%s%s = " (s_path ctx c.cl_path) (static_field ctx c f);
+	let dot_path = (dot_path c.cl_path) ^ (static_field ctx c f.cf_name) in
+	(match (get_exposed ctx dot_path f.cf_meta) with [s] -> print ctx "$hx_exports%s = " (path_to_brackets s) | _ -> ());
+	print ctx "%s%s = " (s_path ctx c.cl_path) (static_field ctx c f.cf_name);
 	gen_value ctx e;
 	newline ctx
 
@@ -1460,9 +1462,9 @@ let generate_require ctx path meta =
 		generate_package_create ctx path;
 
 	(match args with
-	| [(EConst(String(module_name)),_)] ->
+	| [(EConst(String(module_name,_)),_)] ->
 		print ctx "%s = require(\"%s\")" p module_name
-	| [(EConst(String(module_name)),_) ; (EConst(String(object_path)),_)] ->
+	| [(EConst(String(module_name,_)),_) ; (EConst(String(object_path,_)),_)] ->
 		print ctx "%s = require(\"%s\").%s" p module_name object_path
 	| _ ->
 		abort "Unsupported @:jsRequire format" mp);

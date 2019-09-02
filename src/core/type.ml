@@ -332,7 +332,7 @@ and module_def = {
 
 and module_def_display = {
 	mutable m_inline_calls : (pos * pos) list; (* calls whatever is at pos1 from pos2 *)
-	mutable m_type_hints : (pos * t) list;
+	mutable m_type_hints : (pos * pos) list;
 }
 
 and module_def_extra = {
@@ -807,6 +807,41 @@ let rec follow t =
 		follow t
 	| _ -> t
 
+let rec follow_without_null t =
+	match t with
+	| TMono r ->
+		(match !r with
+		| Some t -> follow t
+		| _ -> t)
+	| TLazy f ->
+		follow (lazy_type f)
+	| TType (t,tl) ->
+		follow (apply_params t.t_params tl t.t_type)
+	| _ -> t
+
+(** Assumes `follow` has already been applied *)
+let rec ambiguate_funs t =
+	match t with
+	| TFun _ -> TFun ([], t_dynamic)
+	| TMono r ->
+		(match !r with
+		| Some _ -> assert false
+		| _ -> t)
+	| TInst (a, pl) ->
+	    TInst (a, List.map ambiguate_funs pl)
+	| TEnum (a, pl) ->
+	    TEnum (a, List.map ambiguate_funs pl)
+	| TAbstract (a, pl) ->
+	    TAbstract (a, List.map ambiguate_funs pl)
+	| TType (a, pl) ->
+	    TType (a, List.map ambiguate_funs pl)
+	| TDynamic _ -> t
+	| TAnon a ->
+	    TAnon { a with a_fields =
+		    PMap.map (fun af -> { af with cf_type =
+				ambiguate_funs af.cf_type }) a.a_fields }
+	| TLazy _ -> assert false
+
 let rec is_nullable = function
 	| TMono r ->
 		(match !r with None -> false | Some t -> is_nullable t)
@@ -906,7 +941,7 @@ let rec module_type_of_type = function
 let tconst_to_const = function
 	| TInt i -> Int (Int32.to_string i)
 	| TFloat s -> Float s
-	| TString s -> String s
+	| TString s -> String(s,SDoubleQuotes)
 	| TBool b -> Ident (if b then "true" else "false")
 	| TNull -> Ident "null"
 	| TThis -> Ident "this"
@@ -1770,47 +1805,45 @@ let rec fast_eq_mono ml a b =
 	| _ , _ ->
 		false
 
-let rec fast_eq_anon ?(mono_equals_dynamic=false) a b =
-	if fast_eq_check (fast_eq_anon ~mono_equals_dynamic) a b then
-		true
-	else match a , b with
-	(*
-		`mono_equals_dynamic` is here because of https://github.com/HaxeFoundation/haxe/issues/8588#issuecomment-520138371
-		Generally unbound monomorphs should not be considered equal to anything,
-		because it's unknown, which types they would be bound to.
-	*)
-	| t, TMono { contents = None } when t == t_dynamic -> mono_equals_dynamic
-	| TMono { contents = None }, t when t == t_dynamic -> mono_equals_dynamic
-	| TMono { contents = Some t1 }, TMono { contents = Some t2 } ->
-		fast_eq_anon t1 t2
-	| TAnon a1, TAnon a2 ->
-		let fields_eq() =
-			let rec loop fields1 fields2 =
-				match fields1, fields2 with
-				| [], [] -> true
-				| _, [] | [], _ -> false
-				| f1 :: rest1, f2 :: rest2 ->
-					f1.cf_name = f2.cf_name
-					&& (try fast_eq_anon f1.cf_type f2.cf_type with Not_found -> false)
-					&& loop rest1 rest2
-			in
-			let fields1 = PMap.fold (fun field fields -> field :: fields) a1.a_fields []
-			and fields2 = PMap.fold (fun field fields -> field :: fields) a2.a_fields []
-			and sort_compare f1 f2 = compare f1.cf_name f2.cf_name in
-			loop (List.sort sort_compare fields1) (List.sort sort_compare fields2)
-		in
-		(match !(a2.a_status), !(a1.a_status) with
-		| Statics c, Statics c2 -> c == c2
-		| EnumStatics e, EnumStatics e2 -> e == e2
-		| AbstractStatics a, AbstractStatics a2 -> a == a2
-		| Extend tl1, Extend tl2 -> fields_eq() && List.for_all2 fast_eq_anon tl1 tl2
-		| Closed, Closed -> fields_eq()
-		| Opened, Opened -> fields_eq()
-		| Const, Const -> fields_eq()
-		| _ -> false
-		)
-	| _ , _ ->
-		false
+let rec shallow_eq a b =
+	a == b
+	|| begin
+		let a = follow a
+		and b = follow b in
+		fast_eq_check shallow_eq a b
+		|| match a , b with
+			| t, TMono { contents = None } when t == t_dynamic -> true
+			| TMono { contents = None }, t when t == t_dynamic -> true
+			| TMono { contents = None }, TMono { contents = None } -> true
+			| TAnon a1, TAnon a2 ->
+				let fields_eq() =
+					let rec loop fields1 fields2 =
+						match fields1, fields2 with
+						| [], [] -> true
+						| _, [] | [], _ -> false
+						| f1 :: rest1, f2 :: rest2 ->
+							f1.cf_name = f2.cf_name
+							&& (try shallow_eq f1.cf_type f2.cf_type with Not_found -> false)
+							&& loop rest1 rest2
+					in
+					let fields1 = PMap.fold (fun field fields -> field :: fields) a1.a_fields []
+					and fields2 = PMap.fold (fun field fields -> field :: fields) a2.a_fields []
+					and sort_compare f1 f2 = compare f1.cf_name f2.cf_name in
+					loop (List.sort sort_compare fields1) (List.sort sort_compare fields2)
+				in
+				(match !(a2.a_status), !(a1.a_status) with
+				| Statics c, Statics c2 -> c == c2
+				| EnumStatics e, EnumStatics e2 -> e == e2
+				| AbstractStatics a, AbstractStatics a2 -> a == a2
+				| Extend tl1, Extend tl2 -> fields_eq() && List.for_all2 shallow_eq tl1 tl2
+				| Closed, Closed -> fields_eq()
+				| Opened, Opened -> fields_eq()
+				| Const, Const -> fields_eq()
+				| _ -> false
+				)
+			| _ , _ ->
+				false
+	end
 
 (* perform unification with subtyping.
    the first type is always the most down in the class hierarchy
@@ -2892,7 +2925,7 @@ module TExprToExpr = struct
 		| TUnop (op,p,e) -> EUnop (op,p,convert_expr e)
 		| TFunction f ->
 			let arg (v,c) = (v.v_name,v.v_pos), false, v.v_meta, mk_type_hint v.v_type null_pos, (match c with None -> None | Some c -> Some (convert_expr c)) in
-			EFunction (None,{ f_params = []; f_args = List.map arg f.tf_args; f_type = mk_type_hint f.tf_type null_pos; f_expr = Some (convert_expr f.tf_expr) })
+			EFunction (FKAnonymous,{ f_params = []; f_args = List.map arg f.tf_args; f_type = mk_type_hint f.tf_type null_pos; f_expr = Some (convert_expr f.tf_expr) })
 		| TVar (v,eo) ->
 			EVars ([(v.v_name,v.v_pos), v.v_final, mk_type_hint v.v_type v.v_pos, eopt eo])
 		| TBlock el -> EBlock (List.map convert_expr el)

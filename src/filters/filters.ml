@@ -286,7 +286,7 @@ let rename_local_vars ctx reserved e =
 		reserve !name;
 		Hashtbl.replace count_table v.v_name !count;
 		if not (Meta.has Meta.RealPath v.v_meta) then
-			v.v_meta <- (Meta.RealPath,[EConst (String v.v_name),e.epos],e.epos) :: v.v_meta;
+			v.v_meta <- (Meta.RealPath,[EConst (String(v.v_name,SDoubleQuotes)),e.epos],e.epos) :: v.v_meta;
 		v.v_name <- !name;
 	in
 	List.iter maybe_rename (List.rev !vars);
@@ -487,11 +487,11 @@ let check_private_path ctx t = match t with
 let apply_native_paths ctx t =
 	let get_real_name meta name =
 		let name',p = get_native_name meta in
-		(Meta.RealPath,[Ast.EConst (Ast.String (name)), p], p), name'
+		(Meta.RealPath,[Ast.EConst (Ast.String (name,SDoubleQuotes)), p], p), name'
 	in
 	let get_real_path meta path =
 		let name,p = get_native_name meta in
-		(Meta.RealPath,[Ast.EConst (Ast.String (s_type_path path)), p], p), parse_path name
+		(Meta.RealPath,[Ast.EConst (Ast.String (s_type_path path,SDoubleQuotes)), p], p), parse_path name
 	in
 	try
 		(match t with
@@ -889,7 +889,9 @@ let run com tctx main =
 	let t = filter_timer detail_times ["type 1"] in
 	List.iter (fun f -> List.iter f new_types) filters;
 	t();
+	com.stage <- CAnalyzerStart;
 	if com.platform <> Cross then Analyzer.Run.run_on_types tctx new_types;
+	com.stage <- CAnalyzerDone;
 	let reserved = collect_reserved_local_names com in
 	let filters = [
 		Optimizer.sanitize com;
@@ -906,9 +908,11 @@ let run com tctx main =
 	let t = filter_timer detail_times ["callbacks"] in
 	List.iter (fun f -> f()) (List.rev com.callbacks#get_before_save); (* macros onGenerate etc. *)
 	t();
+	com.stage <- CSaveStart;
 	let t = filter_timer detail_times ["save state"] in
 	List.iter (save_class_state tctx) new_types;
 	t();
+	com.stage <- CSaveDone;
 	let t = filter_timer detail_times ["callbacks"] in
 	List.iter (fun f -> f()) (List.rev com.callbacks#get_after_save); (* macros onGenerate etc. *)
 	t();
@@ -922,6 +926,7 @@ let run com tctx main =
 		check_remove_metadata tctx t;
 	) com.types;
 	t();
+	com.stage <- CDceStart;
 	let t = filter_timer detail_times ["dce"] in
 	(* DCE *)
 	let dce_mode = if Common.defined com Define.As3 then
@@ -937,6 +942,7 @@ let run com tctx main =
 	in
 	Dce.run com main dce_mode;
 	t();
+	com.stage <- CDceDone;
 	(* PASS 3: type filters post-DCE *)
 	let type_filters = [
 		check_private_path;
@@ -957,4 +963,5 @@ let run com tctx main =
 	let t = filter_timer detail_times ["type 3"] in
 	List.iter (fun t -> List.iter (fun f -> f tctx t) type_filters) com.types;
 	t();
-	List.iter (fun f -> f()) (List.rev com.callbacks#get_after_filters)
+	List.iter (fun f -> f()) (List.rev com.callbacks#get_after_filters);
+	com.stage <- CFilteringDone

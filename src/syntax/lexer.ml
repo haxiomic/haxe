@@ -97,22 +97,26 @@ let keywords =
 		Operator;Overload];
 	h
 
-let is_valid_identifier s = try
-	for i = 0 to String.length s - 1 do
-		match String.unsafe_get s i with
-		| 'a'..'z' | 'A'..'Z' | '_' -> ()
-		| '0'..'9' when i > 0 -> ()
-		| _ -> raise Exit
-	done;
-	if Hashtbl.mem keywords s then raise Exit;
-	true
-with Exit ->
-	false
+let is_valid_identifier s =
+	if String.length s = 0 then
+		false
+	else
+		try
+			for i = 0 to String.length s - 1 do
+				match String.unsafe_get s i with
+				| 'a'..'z' | 'A'..'Z' | '_' -> ()
+				| '0'..'9' when i > 0 -> ()
+				| _ -> raise Exit
+			done;
+			if Hashtbl.mem keywords s then raise Exit;
+			true
+		with Exit ->
+			false
 
-let init file do_add =
+let init file =
 	let f = make_file file in
 	cur := f;
-	if do_add then Hashtbl.replace all_files file f
+	Hashtbl.replace all_files file f
 
 let save() =
 	!cur
@@ -272,7 +276,7 @@ let mk_keyword lexbuf kwd =
 	mk lexbuf (Kwd kwd)
 
 let invalid_char lexbuf =
-	error (Invalid_character (lexeme_char lexbuf 0)) (lexeme_start lexbuf)
+	error (Invalid_character (Uchar.to_int (lexeme_char lexbuf 0))) (lexeme_start lexbuf)
 
 let ident = [%sedlex.regexp?
 	(
@@ -397,13 +401,13 @@ let rec token lexbuf =
 		let pmin = lexeme_start lexbuf in
 		let pmax = (try string lexbuf with Exit -> error Unterminated_string pmin) in
 		let str = (try unescape (contents()) with Invalid_escape_sequence(c,i,msg) -> error (Invalid_escape (c,msg)) (pmin + i)) in
-		mk_tok (Const (String str)) pmin pmax;
+		mk_tok (Const (String(str,SDoubleQuotes))) pmin pmax;
 	| "'" ->
 		reset();
 		let pmin = lexeme_start lexbuf in
 		let pmax = (try string2 lexbuf with Exit -> error Unterminated_string pmin) in
 		let str = (try unescape (contents()) with Invalid_escape_sequence(c,i,msg) -> error (Invalid_escape (c,msg)) (pmin + i)) in
-		let t = mk_tok (Const (String str)) pmin pmax in
+		let t = mk_tok (Const (String(str,SSingleQuotes))) pmin pmax in
 		fast_add_fmt_string (snd t);
 		t
 	| "~/" ->
@@ -556,7 +560,7 @@ and regexp lexbuf =
 	| '\\', ('\\' | '$' | '.' | '*' | '+' | '^' | '|' | '{' | '}' | '[' | ']' | '(' | ')' | '?' | '-' | '0'..'9') -> add (lexeme lexbuf); regexp lexbuf
 	| '\\', ('w' | 'W' | 'b' | 'B' | 's' | 'S' | 'd' | 'D' | 'x') -> add (lexeme lexbuf); regexp lexbuf
 	| '\\', ('u' | 'U'), ('0'..'9' | 'a'..'f' | 'A'..'F'), ('0'..'9' | 'a'..'f' | 'A'..'F'), ('0'..'9' | 'a'..'f' | 'A'..'F'), ('0'..'9' | 'a'..'f' | 'A'..'F') -> add (lexeme lexbuf); regexp lexbuf
-	| '\\', Compl '\\' -> error (Invalid_character (lexeme_char lexbuf 0)) (lexeme_end lexbuf - 1)
+	| '\\', Compl '\\' -> error (Invalid_character (Uchar.to_int (lexeme_char lexbuf 0))) (lexeme_end lexbuf - 1)
 	| '/' -> regexp_options lexbuf, lexeme_end lexbuf
 	| Plus (Compl ('\\' | '/' | '\r' | '\n')) -> store lexbuf; regexp lexbuf
 	| _ -> assert false

@@ -110,7 +110,7 @@ let maybe_type_against_enum ctx f with_type iscall p =
 				| TAbstract (a,pl) when not (Meta.has Meta.CoreType a.a_meta) ->
 					begin match get_abstract_froms a pl with
 						| [t2] ->
-							if (List.exists (fast_eq_anon ~mono_equals_dynamic:true t) stack) then raise Exit;
+							if (List.exists (shallow_eq t) stack) then raise Exit;
 							loop (t :: stack) t2
 						| _ -> raise Exit
 					end
@@ -1365,8 +1365,8 @@ and handle_efield ctx e p mode =
 									let sl = List.map (fun (n,_,_) -> n) (List.rev acc) in
 									(* if there was no module name part, last guess is that we're trying to get package completion *)
 									if ctx.in_display then begin
-										if ctx.com.json_out = None then raise (Parser.TypePath (sl,None,false,p))
-										else DisplayToplevel.collect_and_raise ctx TKType WithType.no_value (CRToplevel None) (String.concat "." sl,p0) (Some p0)
+										if is_legacy_completion ctx.com then raise (Parser.TypePath (sl,None,false,p))
+										else DisplayToplevel.collect_and_raise ctx TKType WithType.no_value (CRToplevel None) (String.concat "." sl,p0) p0
 									end;
 									raise e)
 		in
@@ -1467,7 +1467,6 @@ and type_vars ctx vl p =
 					let e = AbstractCast.cast_or_unify ctx t e p in
 					Some e
 			) in
-			if starts_with v '$' then display_error ctx "Variables names starting with a dollar are not allowed" p;
 			let v = add_local_with_origin ctx TVOLocalVariable v t pv in
 			if final then v.v_final <- true;
 			if ctx.in_display && DisplayPosition.display_position#enclosed_in pv then
@@ -1515,7 +1514,7 @@ and format_string ctx s p =
 	in
 	let add_sub start pos =
 		let len = pos - start in
-		if len > 0 || !e = None then add (EConst (String (String.sub s start len))) len
+		if len > 0 || !e = None then add (EConst (String (String.sub s start len,SDoubleQuotes))) len
 	in
 	let len = String.length s in
 	let rec parse start pos =
@@ -1623,7 +1622,7 @@ and type_object_decl ctx fl with_type p =
 			| TAnon a -> ODKWithStructure a
 			| TAbstract (a,pl) as t
 				when not (Meta.has Meta.CoreType a.a_meta)
-					&& not (List.exists (fun t' -> fast_eq_anon ~mono_equals_dynamic:true t t') seen) ->
+					&& not (List.exists (fun t' -> shallow_eq t t') seen) ->
 				let froms = get_abstract_froms a pl
 				and fold = fun acc t' -> match loop (t :: seen) t' with ODKPlain -> acc | t -> t :: acc in
 				(match List.fold_left fold [] froms with
@@ -1894,7 +1893,6 @@ and type_try ctx e1 catches with_type p =
 			| _ -> error "Catch type must be a class, an enum or Dynamic" (pos e_ast)
 		in
 		let name,t2 = loop t in
-		if starts_with v '$' then display_error ctx "Catch variable names starting with a dollar are not allowed" p;
 		check_unreachable acc1 t2 (pos e_ast);
 		let locals = save_locals ctx in
 		let v = add_local_with_origin ctx TVOCatchVariable v t pv in
@@ -1992,7 +1990,8 @@ and type_map_declaration ctx e1 el with_type p =
 	let el = (mk (TVar (v,Some enew)) t_dynamic p) :: (List.rev el) in
 	mk (TBlock el) tmap p
 
-and type_local_function ctx name inline f with_type p =
+and type_local_function ctx kind f with_type p =
+	let name,inline = match kind with FKNamed (name,inline) -> Some name,inline | _ -> None,false in
 	let params = TypeloadFunction.type_function_params ctx f (match name with None -> "localfun" | Some (n,_) -> n) p in
 	if params <> [] then begin
 		if name = None then display_error ctx "Type parameters not supported in unnamed local functions" p;
@@ -2041,7 +2040,6 @@ and type_local_function ctx name inline f with_type p =
 	let v = (match v with
 		| None -> None
 		| Some v ->
-			if starts_with v '$' then display_error ctx "Variable names starting with a dollar are not allowed" p;
 			let v = (add_local_with_origin ctx TVOLocalFunction v ft pname) in
 			if params <> [] then v.v_extra <- Some (params,None);
 			Some v
@@ -2111,7 +2109,7 @@ and type_array_decl ctx el with_type p =
 					Some (get_iterable_param t)
 				with Not_found ->
 					None)
-			| TAbstract (a,pl) as t when not (List.exists (fun t' -> fast_eq_anon ~mono_equals_dynamic:true t (follow t')) seen) ->
+			| TAbstract (a,pl) as t when not (List.exists (fun t' -> shallow_eq t t') seen) ->
 				let types =
 					List.fold_left
 						(fun acc t' -> match loop (t :: seen) t' with
@@ -2334,8 +2332,6 @@ and type_meta ?(mode=MGet) ctx m e1 with_type p =
 			| ENew (t,el) ->
 				let e = type_new ctx t el with_type true p in
 				{e with eexpr = TMeta((Meta.Inline,[],null_pos),e)}
-			| EFunction(Some(_) as name,e1) ->
-				type_local_function ctx name true e1 with_type p
 			| _ ->
 				display_error ctx "Call or function expected after inline keyword" p;
 				e();
@@ -2449,9 +2445,9 @@ and type_call ?(mode=MGet) ctx e el (with_type:WithType.t) inline p =
 
 and type_expr ?(mode=MGet) ctx (e,p) (with_type:WithType.t) =
 	match e with
-	| EField ((EConst (String s),ps),"code") ->
+	| EField ((EConst (String(s,_)),ps),"code") ->
 		if UTF8.length s <> 1 then error "String must be a single UTF8 char" ps;
-		mk (TConst (TInt (Int32.of_int (UChar.code (UTF8.get s 0))))) ctx.t.tint p
+		mk (TConst (TInt (Int32.of_int (UCharExt.code (UTF8.get s 0))))) ctx.t.tint p
 	| EField(_,n) when starts_with n '$' ->
 		error "Field names starting with $ are not allowed" p
 	| EConst (Ident s) ->
@@ -2466,7 +2462,7 @@ and type_expr ?(mode=MGet) ctx (e,p) (with_type:WithType.t) =
 		let opt = mk (TConst (TString opt)) ctx.t.tstring p in
 		let t = Typeload.load_core_type ctx "EReg" in
 		mk (TNew ((match t with TInst (c,[]) -> c | _ -> assert false),[],[str;opt])) t p
-	| EConst (String s) when s <> "" && Lexer.is_fmt_string p ->
+	| EConst (String(s,_)) when s <> "" && Lexer.is_fmt_string p ->
 		type_expr ctx (format_string ctx s p) with_type
 	| EConst c ->
 		Texpr.type_constant ctx.com.basic c p
@@ -2558,8 +2554,8 @@ and type_expr ?(mode=MGet) ctx (e,p) (with_type:WithType.t) =
 		type_new ctx t el with_type false p
 	| EUnop (op,flag,e) ->
 		type_unop ctx op flag e p
-	| EFunction (name,f) ->
-		type_local_function ctx name false f with_type p
+	| EFunction (kind,f) ->
+		type_local_function ctx kind f with_type p
 	| EUntyped e ->
 		let old = ctx.untyped in
 		ctx.untyped <- true;
@@ -2610,6 +2606,7 @@ let rec create com =
 			std = null_module;
 			global_using = [];
 			complete = false;
+			type_hints = [];
 			do_inherit = MagicTypes.on_inherit;
 			do_create = create;
 			do_macro = MacroContext.type_macro;
@@ -2654,6 +2651,7 @@ let rec create com =
 		vthis = None;
 		in_call_args = false;
 		on_error = (fun ctx msg p -> ctx.com.error msg p);
+		memory_marker = Typecore.memory_marker;
 	} in
 	ctx.g.std <- (try
 		TypeloadModule.load_module ctx ([],"StdTypes") null_pos
