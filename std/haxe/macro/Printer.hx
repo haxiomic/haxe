@@ -116,7 +116,7 @@ class Printer {
 			+ (tp.params == null ? "" : tp.params.length > 0 ? "<" + tp.params.map(printTypeParam).join(", ") + ">" : "");
 
 	// TODO: check if this can cause loops
-	public function printComplexType(ct:ComplexType)
+	public function printComplexType(ct:ComplexType): String {
 		return switch (ct) {
 			case TPath(tp): printTypePath(tp);
 			case TFunction(args, ret):
@@ -128,7 +128,21 @@ class Printer {
 					default: true;
 				}
 				var argStr = args.map(printComplexType).join(", ");
-				(wrapArgumentsInParentheses ? '($argStr)' : argStr) + " -> " + printComplexType(ret);
+				(wrapArgumentsInParentheses ? '($argStr)' : argStr) + " -> " + (
+					/**
+						@! this is the repro of the compiler issue:
+
+						- The following expression should be equivalent to just `printComplexType(ret)` because the switch is redundant
+						- When testing in simple examples everything works as expected
+						- When compiling the unit tests (e.g. `haxe compile-js.hxml`), haxe fails with:
+							`Cannot use Void as value`
+						- If it's tweaked to compile it generates the wrong code on all targets
+						- It doesn't seem to matter what we're switching on, so I've just used `true` for simplicity (see #9385 for original example)
+					**/
+					switch true {
+						default: printComplexType(ret);
+					}
+				);
 			case TAnonymous(fields): "{ " + [for (f in fields) printField(f) + "; "].join("") + "}";
 			case TParent(ct): "(" + printComplexType(ct) + ")";
 			case TOptional(ct): "?" + printComplexType(ct);
@@ -136,6 +150,7 @@ class Printer {
 			case TExtend(tpl, fields): '{> ${tpl.map(printTypePath).join(" >, ")}, ${fields.map(printField).join(", ")} }';
 			case TIntersection(tl): tl.map(printComplexType).join(" & ");
 		}
+	}
 
 	public function printMetadata(meta:MetadataEntry)
 		return '@${meta.name}' + ((meta.params != null && meta.params.length > 0) ? '(${printExprs(meta.params, ", ")})' : "");
