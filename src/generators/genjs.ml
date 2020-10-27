@@ -401,6 +401,10 @@ let rec gen_call ctx e el in_value =
 		(match ctx.current.cl_super with
 		| None -> abort "Missing api.setCurrentClass" e.epos
 		| Some (c,_) ->
+			(* print ctx "Object.assign(%s,new %s(" (this ctx) (ctx.type_accessor (TClassDecl c));
+			concat ctx "," (gen_value ctx) params;
+			spr ctx "))"; *)
+
 			print ctx "Reflect.construct(%s,[" (ctx.type_accessor (TClassDecl c));
 			concat ctx "," (gen_value ctx) params;
 			print ctx "],%s)" (ctx.type_accessor (TClassDecl ctx.current));
